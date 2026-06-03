@@ -1,5 +1,7 @@
 # RTM Sync
 
+**Obsidian Remember The Milk Sync (Cow Edition 🐮)**
+
 This is a powerful plugin for [Obsidian](https://obsidian.md) that syncs tasks with [Remember The Milk](https://www.rememberthemilk.com/) (RTM).
 
 It is designed to be **fully compatible with the [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin** and offers granular control over which tasks to import.
