@@ -1,10 +1,12 @@
-# Obsidian Remember The Milk Sync (Cow Edition 🐮) v1.3.0
+# RTM Sync
+
+**Obsidian Remember The Milk Sync (Cow Edition 🐮)**
 
 This is a powerful plugin for [Obsidian](https://obsidian.md) that syncs tasks with [Remember The Milk](https://www.rememberthemilk.com/) (RTM).
 
 It is designed to be **fully compatible with the [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin** and offers granular control over which tasks to import.
 
-## New in v1.3.0 🚀
+## New in v1.3.1 🚀
 
 * **Note Creation**: Create separate Obsidian notes from your RTM tasks. You can specify a dedicated save folder in settings.
 * **Import Notes & Links**: New option to import task notes and RTM web links as sub-bullets when inserting tasks to the editor.
@@ -68,7 +70,7 @@ It is designed to be **fully compatible with the [Obsidian Tasks](https://github
 Remember The Milk (RTM) のタスクを Obsidian 上で同期・管理するためのプラグインです。
 **Obsidian Tasks プラグイン** との互換性を重視しており、期限や優先度を Tasks 形式で出力します。
 
-## v1.3.0 の新機能 🚀
+## v1.3.1 の新機能 🚀
 * **ノート作成機能**: RTMのタスクから独立したObsidianノートを作成できます。設定画面から保存先フォルダを指定可能です。
 * **ノートとリンクのインポート**: エディタにタスクを追加する際、オプションでRTMのタスクノートとWebリンクをサブアイテムとしてインポートできるようになりました。
 * **双方向リンク**: Obsidianのノートからタスクを追加した際、自動でRTMのタスクノートにObsidianノートへのバックリンクが追加されます。
