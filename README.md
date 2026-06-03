@@ -1,4 +1,8 @@
+<<<<<<< Updated upstream
 # Obsidian Remember The Milk Sync (Cow Edition 🐮) v1.2.0
+=======
+# RTM Sync
+>>>>>>> Stashed changes
 
 This is a powerful plugin for [Obsidian](https://obsidian.md) that syncs tasks with [Remember The Milk](https://www.rememberthemilk.com/) (RTM).
 

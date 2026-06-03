@@ -1,5 +1,10 @@
+<<<<<<< Updated upstream
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
 import { MD5 } from 'crypto-js';
+=======
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFile, TFolder } from 'obsidian';
+import md5 from 'md5';
+>>>>>>> Stashed changes
 
 // --- Configuration ---
 const RTM_AUTH_URL = 'https://www.rememberthemilk.com/services/auth/';
@@ -291,7 +296,7 @@ export default class RtmPlugin extends Plugin {
 		const keys = Object.keys(apiParams).sort();
 		let sigString = sharedSecret;
 		for (const key of keys) sigString += key + apiParams[key];
-		apiParams['api_sig'] = MD5(sigString).toString();
+		apiParams['api_sig'] = md5(sigString);
 
 		const url = `${RTM_REST_URL}?${new URLSearchParams(apiParams).toString()}`;
 		const res = await requestUrl({ url: url });
@@ -413,13 +418,13 @@ class RtmSettingTab extends PluginSettingTab {
 		const frobParams:any = { method: 'rtm.auth.getFrob', api_key: apiKey, format: 'json' };
 		let sigString = sharedSecret;
 		Object.keys(frobParams).sort().forEach(k => sigString += k + frobParams[k]);
-		frobParams['api_sig'] = MD5(sigString).toString();
+		frobParams['api_sig'] = md5(sigString);
 		const frobRes = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(frobParams).toString()}` });
 		const frob = frobRes.json.rsp.frob;
 		const authParams:any = { api_key: apiKey, perms: 'delete', frob: frob };
 		let authSigString = sharedSecret;
 		Object.keys(authParams).sort().forEach(k => authSigString += k + authParams[k]);
-		const apiSig = MD5(authSigString).toString();
+		const apiSig = md5(authSigString);
 		window.open(`${RTM_AUTH_URL}?api_key=${apiKey}&perms=delete&frob=${frob}&api_sig=${apiSig}`);
 		new TokenModal(this.app, frob, rtm, async () => { this.display(); }).open();
 	}
@@ -436,7 +441,7 @@ class TokenModal extends Modal {
 			const tokenParams:any = { method: 'rtm.auth.getToken', api_key: apiKey, format: 'json', frob: this.frob };
 			let sig = sharedSecret;
 			Object.keys(tokenParams).sort().forEach(k => sig += k + tokenParams[k]);
-			tokenParams['api_sig'] = MD5(sig).toString();
+			tokenParams['api_sig'] = md5(sig);
 			try {
 				const res = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(tokenParams).toString()}` });
 				if(res.json.rsp.auth) {

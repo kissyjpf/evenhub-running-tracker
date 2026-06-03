@@ -7,6 +7,6 @@ If your plugin does not need CSS, delete this file.
 
 */
 /* IDタグを非表示にする */
-.rtm-id {
-    display: none !important;
+body .rtm-id {
+    display: none;
 }
