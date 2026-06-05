@@ -6,7 +6,7 @@ This is a powerful plugin for [Obsidian](https://obsidian.md) that syncs tasks w
 
 It is designed to be **fully compatible with the [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin** and offers granular control over which tasks to import.
 
-## New in v1.3.1 🚀
+## New in v1.3.2 🚀
 
 * **Note Creation**: Create separate Obsidian notes from your RTM tasks. You can specify a dedicated save folder in settings.
 * **Import Notes & Links**: New option to import task notes and RTM web links as sub-bullets when inserting tasks to the editor.
