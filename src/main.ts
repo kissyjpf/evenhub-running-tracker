@@ -570,7 +570,11 @@ class RtmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setName('API Key').addText(text => text.setValue(this.plugin.settings.apiKey).onChange(async (v) => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
 		new Setting(containerEl).setName('Shared Secret').addText(text => text.setValue(this.plugin.settings.sharedSecret).onChange(async (v) => { this.plugin.settings.sharedSecret = v; await this.plugin.saveSettings(); }));
-		new Setting(containerEl).setName('Auth').addButton(b => b.setButtonText('Start Auth').onClick(async () => await this.startAuthProcess()));
+		const authSetting = new Setting(containerEl).setName('Auth');
+		if (this.plugin.settings.authToken) {
+			authSetting.setDesc('✅ Authorized');
+		}
+		authSetting.addButton(b => b.setButtonText('Start Auth').onClick(async () => await this.startAuthProcess()));
 
 		new Setting(containerEl)
 			.setName('Default Due Date')
