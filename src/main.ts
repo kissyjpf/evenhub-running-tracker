@@ -25,6 +25,50 @@ const DEFAULT_SETTINGS: RtmPluginSettings = {
 	importWithNotesAndLink: false
 }
 
+// RTM API レスポンス型
+interface RtmResponse {
+	rsp: {
+		stat: string;
+		err?: { msg: string };
+		lists?: { list: RtmList | RtmList[] };
+		tasks?: { list: RtmTaskList | RtmTaskList[] };
+		timeline?: string;
+		frob?: string;
+		auth?: { token: string };
+	};
+}
+
+interface RtmList {
+	id: string;
+	name: string;
+}
+
+interface RtmTaskList {
+	id: string;
+	taskseries?: RtmTaskSeries | RtmTaskSeries[];
+}
+
+interface RtmTaskSeries {
+	id: string;
+	name: string;
+	list_id?: string;
+	task: RtmTask | RtmTask[];
+	tags?: { tag: string | string[] };
+	notes?: { note: RtmNote | RtmNote[] };
+}
+
+interface RtmTask {
+	id: string;
+	due: string;
+	start: string;
+	priority: string;
+	completed: string;
+}
+
+interface RtmNote {
+	$t?: string;
+}
+
 // 内部で扱うタスク情報の構造
 interface FormattedTask {
 	name: string;
@@ -92,7 +136,7 @@ export default class RtmPlugin extends Plugin {
 			callback: async () => {
 				if (!this.checkAuth()) return;
 				await this.fetchAndProcessTasks('status:incomplete', true, (tasks) => {
-					this.createNotesFromTasks(tasks);
+					void this.createNotesFromTasks(tasks);
 				});
 			}
 		});
@@ -135,10 +179,10 @@ export default class RtmPlugin extends Plugin {
 		const map: Record<string, string> = {};
 		try {
 			const res = await this.callRtmApi('rtm.lists.getList');
-			if (res.rsp.lists && res.rsp.lists.list) {
-				const lists = Array.isArray(res.rsp.lists.list) ? res.rsp.lists.list : [res.rsp.lists.list];
+			if (res.rsp.lists?.list) {
+				const lists: RtmList[] = Array.isArray(res.rsp.lists.list) ? res.rsp.lists.list : [res.rsp.lists.list];
 				for (const l of lists) {
-					if (l && l.id && l.name) map[l.id] = l.name;
+					if (l?.id && l?.name) map[l.id] = l.name;
 				}
 			}
 		} catch (e) { console.error("List fetch error:", e); }
@@ -152,36 +196,34 @@ export default class RtmPlugin extends Plugin {
 			const listMap = await this.fetchListsMap();
 			const response = await this.callRtmApi('rtm.tasks.getList', { filter: filterStr, notes: '1' });
 
-			if (!response.rsp.tasks || !response.rsp.tasks.list) {
+			if (!response.rsp.tasks?.list) {
 				new Notice('No tasks found.');
 				return;
 			}
 
 			const parsedTasks: FormattedTask[] = [];
-			const lists = Array.isArray(response.rsp.tasks.list) ? response.rsp.tasks.list : [response.rsp.tasks.list];
+			const lists: RtmTaskList[] = Array.isArray(response.rsp.tasks.list) ? response.rsp.tasks.list : [response.rsp.tasks.list];
 
 			for (const list of lists) {
 				if (!list.taskseries) continue;
-				const seriesArray = Array.isArray(list.taskseries) ? list.taskseries : [list.taskseries];
-				
+				const seriesArray: RtmTaskSeries[] = Array.isArray(list.taskseries) ? list.taskseries : [list.taskseries];
+
 				for (const s of seriesArray) {
 					const name = s.name;
-					const task = Array.isArray(s.task) ? s.task[0] : s.task;
-					
+					const task: RtmTask = Array.isArray(s.task) ? s.task[0] : s.task;
+
 					let realListId = list.id;
 					if (!realListId && s.list_id) realListId = s.list_id;
-					if (!realListId) realListId = "MISSING"; 
+					if (!realListId) realListId = "MISSING";
 
 					let dueDisplay = "";
 					if (task.due && task.due !== "") {
-						const datePart = task.due.split('T')[0];
-						dueDisplay = `📅 ${datePart}`;
+						dueDisplay = `📅 ${task.due.split('T')[0]}`;
 					}
 
 					let startDisplay = "";
 					if (task.start && task.start !== "") {
-						const startPart = task.start.split('T')[0];
-						startDisplay = `🛫 ${startPart}`;
+						startDisplay = `🛫 ${task.start.split('T')[0]}`;
 					}
 
 					let priDisplay = "";
@@ -191,27 +233,25 @@ export default class RtmPlugin extends Plugin {
 						case '3': priDisplay = "🔽"; break;
 					}
 
-					let listNameDisplay = "";
-					const listName = listMap[realListId];
-					if (listName) listNameDisplay = listName;
+					const listNameDisplay = listMap[realListId] ?? "";
 
 					const tagArray: string[] = [];
-					if (s.tags && s.tags.tag) {
-						const rawTags = Array.isArray(s.tags.tag) ? s.tags.tag : [s.tags.tag];
-						rawTags.forEach((t: string) => tagArray.push(t));
+					if (s.tags?.tag) {
+						const rawTags: string[] = Array.isArray(s.tags.tag) ? s.tags.tag : [s.tags.tag];
+						rawTags.forEach(t => tagArray.push(t));
 					}
 
 					const noteArray: string[] = [];
-					if (s.notes && s.notes.note) {
-						const rawNotes = Array.isArray(s.notes.note) ? s.notes.note : [s.notes.note];
-						rawNotes.forEach((n: any) => {
-							const text = n.$t || n.toString(); 
+					if (s.notes?.note) {
+						const rawNotes: RtmNote[] = Array.isArray(s.notes.note) ? s.notes.note : [s.notes.note];
+						rawNotes.forEach((n: RtmNote) => {
+							const text = n.$t ?? String(n);
 							if (text) noteArray.push(text);
 						});
 					}
 
 					parsedTasks.push({
-						name: name,
+						name,
 						due: dueDisplay,
 						start: startDisplay,
 						priority: priDisplay,
@@ -331,11 +371,13 @@ export default class RtmPlugin extends Plugin {
 			const timeline = await this.getTimeline();
 			const res = await this.callRtmApi('rtm.tasks.add', { timeline: timeline, name: taskName, parse: '1' });
 
-			const list = Array.isArray(res.rsp.list) ? res.rsp.list[0] : res.rsp.list;
+			const rawList = res.rsp.tasks?.list;
+			const list: RtmTaskList = Array.isArray(rawList) ? rawList[0] : (rawList ?? { id: '', taskseries: undefined });
 			const listId = list.id;
-			const series = Array.isArray(list.taskseries) ? list.taskseries[0] : list.taskseries;
+			const seriesRaw = list.taskseries;
+			const series: RtmTaskSeries = Array.isArray(seriesRaw) ? seriesRaw[0] : (seriesRaw ?? { id: '', name: '', task: { id: '', due: '', start: '', priority: '', completed: '' } });
 			const taskSeriesId = series.id;
-			const taskObj = Array.isArray(series.task) ? series.task[0] : series.task;
+			const taskObj: RtmTask = Array.isArray(series.task) ? series.task[0] : series.task;
 			const taskId = taskObj.id;
 
 			// 現在の設定に従ってデフォルト期日を設定
@@ -410,16 +452,16 @@ export default class RtmPlugin extends Plugin {
 	async getTimeline(): Promise<string> {
 		if (this.timeline) return this.timeline;
 		const res = await this.callRtmApi('rtm.timelines.create');
-		this.timeline = res.rsp.timeline;
-		return this.timeline!;
+		this.timeline = res.rsp.timeline ?? '';
+		return this.timeline;
 	}
 
-	async callRtmApi(method: string, params: any = {}) {
+	async callRtmApi(method: string, params: Record<string, string> = {}): Promise<RtmResponse> {
 		const apiKey = this.settings.apiKey;
 		const sharedSecret = this.settings.sharedSecret;
 		if(!apiKey || !sharedSecret) throw new Error("API Key/Secret missing");
 
-		const apiParams: any = { ...params, method: method, api_key: apiKey, format: 'json', auth_token: this.settings.authToken };
+		const apiParams: Record<string, string> = { ...params, method, api_key: apiKey, format: 'json', auth_token: this.settings.authToken };
 		const keys = Object.keys(apiParams).sort();
 		let sigString = sharedSecret;
 		for (const key of keys) sigString += key + apiParams[key];
@@ -427,11 +469,12 @@ export default class RtmPlugin extends Plugin {
 
 		const url = `${RTM_REST_URL}?${new URLSearchParams(apiParams).toString()}`;
 		const res = await requestUrl({ url: url });
-		if(res.json.rsp.stat !== 'ok') {
-			console.error('API Error:', res.json);
-			throw new Error(`API Error: ${res.json.rsp.err?.msg}`);
+		const json = res.json as RtmResponse;
+		if(json.rsp.stat !== 'ok') {
+			console.error('API Error:', json);
+			throw new Error(`API Error: ${json.rsp.err?.msg}`);
 		}
-		return res.json;
+		return json;
 	}
 
 	async ensureFolderExists(folderPath: string) {
@@ -473,12 +516,10 @@ class TaskImportModal extends Modal {
 		const { contentEl } = this;
 		new Setting(contentEl).setName(`Select Tasks (${this.tasks.length})`).setHeading();
 
-		const listContainer = contentEl.createDiv();
-		listContainer.setCssStyles({ maxHeight: "400px", overflowY: "auto", marginBottom: "10px" });
+		const listContainer = contentEl.createDiv({ cls: "rtm-task-list" });
 
 		this.tasks.forEach((task, index) => {
-			const itemDiv = listContainer.createDiv();
-			itemDiv.setCssStyles({ display: "flex", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--background-modifier-border)" });
+			const itemDiv = listContainer.createDiv({ cls: "rtm-task-item" });
 
 			const checkbox = itemDiv.createEl("input", { type: "checkbox" });
 			checkbox.checked = this.selected[index] ?? false;
@@ -486,31 +527,21 @@ class TaskImportModal extends Modal {
 				this.selected[index] = (e.target as HTMLInputElement).checked;
 			};
 
-			const label = itemDiv.createSpan();
-			label.setCssStyles({ marginLeft: "10px" });
-
-			const nameEl = label.createEl("b", { text: task.name });
-			if (task.listName) {
-				const listEl = label.createEl("small", { text: ` [${task.listName}]` });
-				listEl.setCssStyles({ color: "var(--text-muted)" });
-			}
-			if (task.due) {
-				const dueEl = label.createEl("small", { text: ` ${task.due}` });
-				dueEl.setCssStyles({ color: "var(--text-accent)" });
-			}
+			const label = itemDiv.createSpan({ cls: "rtm-task-label" });
+			label.createEl("b", { text: task.name });
+			if (task.listName) label.createEl("small", { text: ` [${task.listName}]`, cls: "rtm-task-list-name" });
+			if (task.due) label.createEl("small", { text: ` ${task.due}`, cls: "rtm-task-due" });
 			if (task.notes && task.notes.length > 0) label.createEl("small", { text: " 📝" });
-			void nameEl;
 		});
 
-		const btnDiv = contentEl.createDiv();
-		btnDiv.setCssStyles({ display: "flex", justifyContent: "flex-end", gap: "10px" });
+		const btnDiv = contentEl.createDiv({ cls: "rtm-btn-row" });
 
 		const toggleBtn = btnDiv.createEl("button", { text: "Select All" });
 		toggleBtn.onclick = () => {
 			const allSelected = this.selected.every(Boolean);
 			this.selected.fill(!allSelected);
-			const checkboxes = listContainer.querySelectorAll('input[type="checkbox"]');
-			checkboxes.forEach((cb: any) => cb.checked = !allSelected);
+			const checkboxes = listContainer.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+			checkboxes.forEach(cb => cb.checked = !allSelected);
 			// ★修正: .text ではなく .textContent を使用
 			toggleBtn.textContent = allSelected ? "Select All" : "Deselect All";
 		};
@@ -559,14 +590,13 @@ class RtmSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: RtmPlugin) { super(app, plugin); this.plugin = plugin; }
 	display(): void {
 		const {containerEl} = this; containerEl.empty();
-		new Setting(containerEl).setName('Remember The Milk Settings').setHeading();
+		new Setting(containerEl).setName('RTM Sync').setHeading();
 
 		const buildTime = typeof BUILD_TIME !== 'undefined' ? BUILD_TIME : "Unknown";
-		const versionEl = containerEl.createEl('p', {
+		containerEl.createEl('p', {
 			text: `Version: ${this.plugin.manifest.version} (Build: ${buildTime})`,
-			cls: 'setting-item-description'
+			cls: 'setting-item-description rtm-version-info'
 		});
-		versionEl.setCssStyles({ marginBottom: '2em' });
 
 		new Setting(containerEl).setName('API Key').addText(text => text.setValue(this.plugin.settings.apiKey).onChange(async (v) => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
 		new Setting(containerEl).setName('Shared Secret').addText(text => text.setValue(this.plugin.settings.sharedSecret).onChange(async (v) => { this.plugin.settings.sharedSecret = v; await this.plugin.saveSettings(); }));
@@ -623,13 +653,13 @@ class RtmSettingTab extends PluginSettingTab {
 		const apiKey = rtm.settings.apiKey;
 		const sharedSecret = rtm.settings.sharedSecret;
 		if (!apiKey || !sharedSecret) { new Notice('Enter keys first'); return; }
-		const frobParams:any = { method: 'rtm.auth.getFrob', api_key: apiKey, format: 'json' };
+		const frobParams: Record<string, string> = { method: 'rtm.auth.getFrob', api_key: apiKey, format: 'json' };
 		let sigString = sharedSecret;
 		Object.keys(frobParams).sort().forEach(k => sigString += k + frobParams[k]);
 		frobParams['api_sig'] = md5(sigString);
 		const frobRes = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(frobParams).toString()}` });
-		const frob = frobRes.json.rsp.frob;
-		const authParams:any = { api_key: apiKey, perms: 'delete', frob: frob };
+		const frob = (frobRes.json as RtmResponse).rsp.frob ?? '';
+		const authParams: Record<string, string> = { api_key: apiKey, perms: 'delete', frob };
 		let authSigString = sharedSecret;
 		Object.keys(authParams).sort().forEach(k => authSigString += k + authParams[k]);
 		const apiSig = md5(authSigString);
@@ -646,14 +676,15 @@ class TokenModal extends Modal {
 		new Setting(contentEl).addButton(btn => btn.setButtonText('Finish Auth').setCta().onClick(async () => {
 			const apiKey = this.plugin.settings.apiKey;
 			const sharedSecret = this.plugin.settings.sharedSecret;
-			const tokenParams:any = { method: 'rtm.auth.getToken', api_key: apiKey, format: 'json', frob: this.frob };
+			const tokenParams: Record<string, string> = { method: 'rtm.auth.getToken', api_key: apiKey, format: 'json', frob: this.frob };
 			let sig = sharedSecret;
 			Object.keys(tokenParams).sort().forEach(k => sig += k + tokenParams[k]);
 			tokenParams['api_sig'] = md5(sig);
 			try {
 				const res = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(tokenParams).toString()}` });
-				if(res.json.rsp.auth) {
-					this.plugin.settings.authToken = res.json.rsp.auth.token;
+				const json = res.json as RtmResponse;
+				if(json.rsp.auth) {
+					this.plugin.settings.authToken = json.rsp.auth.token;
 					await this.plugin.saveSettings();
 					new Notice('Success!'); this.onSuccess(); this.close();
 				} else { new Notice('Failed.'); }

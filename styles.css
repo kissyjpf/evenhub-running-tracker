@@ -10,3 +10,33 @@ If your plugin does not need CSS, delete this file.
 body .rtm-id {
     display: none;
 }
+
+/* Task import modal */
+.rtm-task-list {
+    max-height: 400px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+}
+.rtm-task-item {
+    display: flex;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+.rtm-task-label {
+    margin-left: 10px;
+}
+.rtm-task-list-name {
+    color: var(--text-muted);
+}
+.rtm-task-due {
+    color: var(--text-accent);
+}
+.rtm-btn-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.rtm-version-info {
+    margin-bottom: 2em;
+}
