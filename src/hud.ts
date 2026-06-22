@@ -65,7 +65,7 @@ export function renderHUD(h: HudInput): HUDCells {
       tr: '0.00km',
       ca: calStr,
       bl: '',
-      bc: '○ tap=start  dbl=exit',
+      bc: '○ tap=start  dbl=exit?',
       br: '',
     }
   }
