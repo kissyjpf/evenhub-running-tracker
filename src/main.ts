@@ -225,39 +225,13 @@ async function stopRun(b: Bridge): Promise<void> {
 }
 
 // ── Exit confirmation modal ───────────────────────────────────────────────────
-let exitModalOpen = false
-
 function openExitModal(): void {
-  if (exitModalOpen) return
-  exitModalOpen = true
-  const overlay = document.createElement('div')
-  overlay.style.cssText = 'position:fixed;inset:0;background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;z-index:20'
+  const modal = document.getElementById('exit-modal')
+  if (!modal || modal.style.display !== 'none') return
+  modal.style.display = 'flex'
 
-  const title = document.createElement('p')
-  title.textContent = 'アプリを終了しますか？'
-  title.style.cssText = 'color:#eee;font-size:18px;margin:0;text-align:center'
-
-  const btnRow = document.createElement('div')
-  btnRow.style.cssText = 'display:flex;gap:16px'
-
-  const btnExit = document.createElement('button')
-  btnExit.textContent = '終了'
-  btnExit.style.cssText = 'background:#400;color:#f88;border:1px solid #933;border-radius:4px;padding:10px 28px;font-size:15px;cursor:pointer'
-  btnExit.addEventListener('click', () => { window.close() })
-
-  const btnCancel = document.createElement('button')
-  btnCancel.textContent = 'キャンセル'
-  btnCancel.style.cssText = 'background:#222;color:#ddd;border:1px solid #444;border-radius:4px;padding:10px 28px;font-size:15px;cursor:pointer'
-  btnCancel.addEventListener('click', () => {
-    document.body.removeChild(overlay)
-    exitModalOpen = false
-  })
-
-  btnRow.appendChild(btnExit)
-  btnRow.appendChild(btnCancel)
-  overlay.appendChild(title)
-  overlay.appendChild(btnRow)
-  document.body.appendChild(overlay)
+  document.getElementById('exit-confirm-btn')!.onclick = () => { window.close() }
+  document.getElementById('exit-cancel-btn')!.onclick = () => { modal.style.display = 'none' }
 }
 
 // ── Settings WebView ──────────────────────────────────────────────────────────
