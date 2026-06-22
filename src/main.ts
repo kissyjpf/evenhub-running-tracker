@@ -17,7 +17,7 @@ import { PaceEstimator } from './pace'
 import { loadRecords, saveRecords, insertRecord } from './calibration/records'
 import { harvestCalibRecord } from './calibration/harvest'
 import type { RunSample } from './calibration/harvest'
-import { renderHUD, HUDCells, CELL_KEYS } from './hud'
+import { renderHUD, HUDCells, CELL_KEYS, type HudModal } from './hud'
 import { renderSettingsUI } from './settings/ui'
 import { DEFAULT_SETTINGS } from './types'
 
@@ -66,20 +66,15 @@ function makeContainer(
 
 let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', bl:'', bc:'', br:'' }
 let bridge: Bridge | null = null
+let hudModal: HudModal = { type: 'none' }
+let helpTimer: ReturnType<typeof setTimeout> | null = null
 
 async function flushHUD(): Promise<void> {
   if (!bridge) return
   const h = buildHudInput()
   const cells = renderHUD(h)
 
-  // When settings is open, update the phone-side preview and skip glasses transfer
-  if (settingsOpen) {
-    CELL_KEYS.forEach(k => {
-      const el = document.querySelector<HTMLElement>(`#prev-${k}`)
-      if (el) el.textContent = cells[k]
-    })
-    return
-  }
+  if (settingsOpen) return
 
   for (let i = 0; i < CELL_KEYS.length; i++) {
     const key = CELL_KEYS[i]!
@@ -131,6 +126,7 @@ function buildHudInput() {
     calories,
     showSteps:           state.settings.showSteps,
     showCalories:        state.settings.showCalories,
+    modal:               hudModal,
   }
 }
 
@@ -274,49 +270,60 @@ function discardRun(): void {
   pace.resetEma()
 }
 
-// ── Stop / save modal ─────────────────────────────────────────────────────────
-function openStopModal(b: Bridge): void {
-  const modal = document.getElementById('stop-modal')
-  if (!modal || modal.style.display !== 'none') return
-  modal.style.display = 'flex'
-
-  const close = () => { modal.style.display = 'none' }
-
-  document.getElementById('stop-save-btn')!.onclick = async () => {
-    const btn = document.getElementById('stop-save-btn') as HTMLButtonElement
-    btn.textContent = '保存中...'
-    btn.disabled = true
-    await stopRun(b)
-    close()
-    btn.textContent = '保存して終了'
-    btn.disabled = false
-    showHelp(false)
-    await flushHUD()
-  }
-
-  document.getElementById('stop-discard-btn')!.onclick = () => {
-    discardRun()
-    close()
-    showHelp(false)
+// ── HUD modal / help ──────────────────────────────────────────────────────────
+function startHelp(): void {
+  hudModal = { type: 'help' }
+  if (helpTimer) clearTimeout(helpTimer)
+  helpTimer = setTimeout(() => {
+    if (hudModal.type === 'help') hudModal = { type: 'none' }
+    helpTimer = null
     flushHUD().catch(console.error)
-  }
-
-  document.getElementById('stop-continue-btn')!.onclick = close
+  }, 4000)
 }
 
-// ── Exit confirmation modal ───────────────────────────────────────────────────
-function openExitModal(): void {
-  const modal = document.getElementById('exit-modal')
-  if (!modal || modal.style.display !== 'none') return
-  modal.style.display = 'flex'
+async function handleModalGesture(type: number, b: Bridge): Promise<void> {
+  const m = hudModal
+  if (m.type === 'none') return
 
-  document.getElementById('exit-confirm-btn')!.onclick = () => {
-    const btn = document.getElementById('exit-confirm-btn') as HTMLButtonElement
-    btn.textContent = '終了中...'
-    btn.disabled = true
-    window.close()
+  if (m.type === 'exit') {
+    if (type === OsEventTypeList.SCROLL_TOP_EVENT || type === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+      hudModal = { type: 'exit', sel: 1 - m.sel }
+    } else if (type === OsEventTypeList.CLICK_EVENT) {
+      hudModal = { type: 'none' }
+      await flushHUD()
+      if (m.sel === 0) window.close()
+      return
+    } else {
+      hudModal = { type: 'none' }
+    }
+
+  } else if (m.type === 'stop') {
+    if (type === OsEventTypeList.SCROLL_TOP_EVENT) {
+      hudModal = { type: 'stop', sel: (m.sel + 1) % 3 }
+    } else if (type === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+      hudModal = { type: 'stop', sel: (m.sel + 2) % 3 }
+    } else if (type === OsEventTypeList.CLICK_EVENT) {
+      hudModal = { type: 'none' }
+      if (m.sel === 0) await stopRun(b)
+      else if (m.sel === 1) discardRun()
+      // sel === 2: continue — no state change
+    } else {
+      hudModal = { type: 'none' }  // double-tap = continue
+    }
+
+  } else if (m.type === 'help') {
+    if (helpTimer) { clearTimeout(helpTimer); helpTimer = null }
+    if (type === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+      // double-tap during help = open the appropriate menu
+      hudModal = state.status === 'idle'
+        ? { type: 'exit', sel: 0 }
+        : { type: 'stop', sel: 0 }
+    } else {
+      hudModal = { type: 'none' }
+    }
   }
-  document.getElementById('exit-cancel-btn')!.onclick = () => { modal.style.display = 'none' }
+
+  await flushHUD()
 }
 
 // ── Settings WebView ──────────────────────────────────────────────────────────
@@ -329,7 +336,7 @@ function openSettings(b: Bridge): void {
   overlay.style.cssText = 'position:fixed;inset:0;background:#111;overflow:auto;z-index:10'
   document.body.appendChild(overlay)
 
-  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, cachedCells, {
+  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, {
     onSettingsChange(s) {
       state.settings = s
       persistAll(b).catch(console.error)
@@ -353,11 +360,6 @@ function openSettings(b: Bridge): void {
 function setStatus(html: string): void {
   const el = document.getElementById('app-status')
   if (el) el.innerHTML = html
-}
-
-function showHelp(visible: boolean): void {
-  const el = document.getElementById('help-guide')
-  if (el) el.style.display = visible ? 'block' : 'none'
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -439,6 +441,12 @@ async function main(): Promise<void> {
         ?? event.listEvent?.eventType
         ?? OsEventTypeList.CLICK_EVENT
 
+      // HUD modal intercepts all gestures
+      if (hudModal.type !== 'none') {
+        await handleModalGesture(type, b)
+        return
+      }
+
       switch (type) {
 
         // Single tap: start (idle) | lap (running) | resume (paused)
@@ -451,7 +459,7 @@ async function main(): Promise<void> {
               if (granted) console.log('[sensors] upgraded to DeviceMotion')
             }
             startRun()
-            showHelp(true)
+            startHelp()
           } else if (state.status === 'running') {
             recordLap(state)
           } else if (state.status === 'paused') {
@@ -465,13 +473,11 @@ async function main(): Promise<void> {
           break
         }
 
-        // Double tap: exit modal (idle) | save/discard/continue modal (running/paused)
+        // Double tap: exit modal (idle) | stop modal (running/paused)
         case OsEventTypeList.DOUBLE_CLICK_EVENT: {
-          if (state.status === 'idle') {
-            openExitModal()
-          } else {
-            openStopModal(b)
-          }
+          hudModal = state.status === 'idle'
+            ? { type: 'exit', sel: 0 }
+            : { type: 'stop', sel: 0 }
           await flushHUD()
           break
         }
@@ -488,7 +494,7 @@ async function main(): Promise<void> {
           break
         }
 
-        // Swipe down: resume if paused
+        // Swipe down: resume (paused) | show help (idle/running)
         case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
           if (state.status === 'paused') {
             if (state.pauseStart !== null) {
@@ -496,8 +502,10 @@ async function main(): Promise<void> {
               state.pauseStart = null
             }
             state.status = 'running'
-            await flushHUD()
+          } else {
+            startHelp()
           }
+          await flushHUD()
           break
         }
       }

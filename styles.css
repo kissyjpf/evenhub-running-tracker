@@ -17,28 +17,6 @@ body {
     font-size: 13px;
     margin-bottom: 8px;
 }
-#help-guide {
-    margin-top: 12px;
-    padding: 12px 16px;
-    background: #1e1e1e;
-    border: 1px solid #333;
-    border-radius: 6px;
-    font-family: -apple-system, sans-serif;
-}
-.help-title {
-    color: #8cf;
-    font-size: 11px;
-    letter-spacing: .05em;
-    margin: 0 0 8px;
-    text-transform: uppercase;
-}
-.help-list {
-    margin: 0;
-    padding: 0 0 0 16px;
-    color: #bbb;
-    font-size: 13px;
-    line-height: 2;
-}
 /* IDタグを非表示にする */
 body .rtm-id {
     display: none;
@@ -74,56 +52,3 @@ body .rtm-id {
     margin-bottom: 2em;
 }
 
-/* Exit confirmation modal */
-.exit-modal {
-    position: fixed;
-    inset: 0;
-    background: #111;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 24px;
-    z-index: 20;
-}
-.exit-modal-title {
-    color: #eee;
-    font-size: 18px;
-    margin: 0;
-    text-align: center;
-    font-family: -apple-system, sans-serif;
-}
-.exit-modal-btn-row {
-    display: flex;
-    gap: 16px;
-}
-.exit-btn {
-    background: #222;
-    color: #ddd;
-    border: 1px solid #444;
-    border-radius: 4px;
-    padding: 10px 28px;
-    font-size: 15px;
-    cursor: pointer;
-    font-family: -apple-system, sans-serif;
-}
-.exit-btn:active {
-    background: #333;
-}
-.exit-btn-danger {
-    background: #400;
-    color: #f88;
-    border-color: #933;
-}
-.exit-btn-danger:active {
-    background: #500;
-}
-.exit-btn-primary {
-    border-color: #468;
-    color: #8cf;
-}
-.stop-modal-btn-col {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 200px;
-}

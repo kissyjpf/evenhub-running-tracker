@@ -3,6 +3,12 @@
 
 export type RunStatus = 'idle' | 'running' | 'paused'
 
+export type HudModal =
+  | { type: 'none' }
+  | { type: 'exit', sel: number }   // sel 0=exit, 1=cancel
+  | { type: 'stop', sel: number }   // sel 0=save+exit, 1=discard, 2=continue
+  | { type: 'help' }
+
 export interface HudInput {
   status: RunStatus
   elapsedMs: number
@@ -19,6 +25,7 @@ export interface HudInput {
   calories: number
   showSteps: boolean
   showCalories: boolean
+  modal: HudModal
 }
 
 export interface HUDCells {
@@ -52,7 +59,36 @@ function fmtPace(sPerKm: number | null): string {
   return s === 60 ? `${m + 1}:00` : `${m}:${p2(s)}`
 }
 
+function renderModalCells(m: HudModal): HUDCells {
+  const blank: HUDCells = { tl: '', tc: '', tr: '', ca: '', bl: '', bc: '', br: '' }
+
+  if (m.type === 'exit') {
+    const opts = ['終了する', 'キャンセル']
+    const ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+    return { ...blank, tc: '終了確認', ca, bc: 'tap=確定  ↑↓=選択' }
+  }
+
+  if (m.type === 'stop') {
+    const opts = ['保存+終了', '破棄', '継続']
+    const ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+    return { ...blank, tc: '記録を保存?', ca, bc: 'tap=確定  ↑↓=選択' }
+  }
+
+  if (m.type === 'help') {
+    return {
+      ...blank,
+      tc: '操作ガイド',
+      ca: 'tap=ラップ  dbl=停止/終了  ↑=停止  ↓=ヘルプ',
+      bc: 'tap=閉じる',
+    }
+  }
+
+  return blank
+}
+
 export function renderHUD(h: HudInput): HUDCells {
+  if (h.modal.type !== 'none') return renderModalCells(h.modal)
+
   const distKm = (h.totalDistanceM / 1000).toFixed(2)
 
   if (h.status === 'idle') {
@@ -65,7 +101,7 @@ export function renderHUD(h: HudInput): HUDCells {
       tr: '0.00km',
       ca: calStr,
       bl: '',
-      bc: '○ tap=start  dbl=exit?',
+      bc: '○ tap=start  dbl=exit  ↓=help',
       br: '',
     }
   }

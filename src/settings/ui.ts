@@ -3,7 +3,6 @@
 
 import type { CalibRecord, Settings } from '../types'
 import { bandCoverage, editRecordDistance, deleteRecord } from '../calibration/records'
-import type { HUDCells } from '../hud'
 
 export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
@@ -17,7 +16,6 @@ export function renderSettingsUI(
   root: HTMLElement,
   settings: Settings,
   records: CalibRecord[],
-  hudCells: HUDCells,
   cb: SettingsCallbacks,
 ): void {
   root.innerHTML = `
@@ -50,48 +48,7 @@ export function renderSettingsUI(
   .src-tag { font-size: 10px; color: #666; }
   .src-tag.manual { color: #8cf; }
   .back-row { margin-top: 20px; }
-  /* Glasses HUD preview */
-  .hud-preview {
-    background: #050505; border: 1px solid #2a2a2a; border-radius: 10px;
-    padding: 0 6px; margin: 4px 0 12px; position: relative;
-    aspect-ratio: 2 / 1; overflow: hidden;
-    font-family: monospace; color: #00cc55; font-size: 9px; }
-  .hud-row-top, .hud-row-mid {
-    display: flex; align-items: center; height: 9.72%; }
-  .hud-row-bot {
-    position: absolute; bottom: 0; left: 6px; right: 6px;
-    display: flex; align-items: center; height: 9.72%; }
-  .hud-l  { flex: 130; overflow: hidden; white-space: nowrap; }
-  .hud-c  { flex: 316; text-align: center; overflow: hidden; white-space: nowrap; font-size: 11px; }
-  .hud-r  { flex: 130; text-align: right; overflow: hidden; white-space: nowrap; }
-  .hud-f  { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; }
 </style>
-<h2>GLASSES PREVIEW</h2>
-<div class="hud-preview">
-  <div class="hud-row-top">
-    <span class="hud-l" id="prev-tl">${hudCells.tl}</span>
-    <span class="hud-c" id="prev-tc">${hudCells.tc}</span>
-    <span class="hud-r" id="prev-tr">${hudCells.tr}</span>
-  </div>
-  <div class="hud-row-mid">
-    <span class="hud-f" id="prev-ca">${hudCells.ca}</span>
-  </div>
-  <div class="hud-row-bot">
-    <span class="hud-l" id="prev-bl">${hudCells.bl}</span>
-    <span class="hud-c" id="prev-bc">${hudCells.bc}</span>
-    <span class="hud-r" id="prev-br">${hudCells.br}</span>
-  </div>
-</div>
-
-<h2>DISPLAY</h2>
-<label>
-  <input type="checkbox" id="show-steps" ${settings.showSteps ? 'checked' : ''} />
-  Show step count on glasses
-</label>
-<label>
-  <input type="checkbox" id="show-calories" ${settings.showCalories ? 'checked' : ''} />
-  Show calories${settings.weight_kg === null ? '&ensp;<span style="color:#888;font-size:11px">(weight unset → using 65 kg)</span>' : ''}
-</label>
 
 <h2>PROFILE</h2>
 <label>Height
@@ -196,14 +153,6 @@ export function renderSettingsUI(
       if (!confirm('Delete this calibration record?')) return
       cb.onRecordsChange(deleteRecord(records, idx))
     })
-  })
-
-  // Display toggles — save immediately on change
-  root.querySelector('#show-steps')!.addEventListener('change', e => {
-    cb.onSettingsChange({ ...settings, showSteps: (e.target as HTMLInputElement).checked })
-  })
-  root.querySelector('#show-calories')!.addEventListener('change', e => {
-    cb.onSettingsChange({ ...settings, showCalories: (e.target as HTMLInputElement).checked })
   })
 
   root.querySelector('#close-btn')!.addEventListener('click', cb.onClose)
