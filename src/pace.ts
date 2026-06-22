@@ -35,7 +35,7 @@ export class PaceEstimator {
     const gpsOk = gpsSpeedMs !== null && gpsAccuracyM < 15
 
     // L_base uses cadence + vertical_amp (NOT speed → no circular reference)
-    const cadForModel = cadenceSpm ?? 160
+    const cadForModel = cadenceSpm ?? 90
     const lBase = computeLBase(records, cadForModel, verticalAmp, settings)
 
     // Update k when GPS is reliable
@@ -58,7 +58,7 @@ export class PaceEstimator {
       vFused = vAcc  // dead reckoning (k frozen automatically — no update called above)
     }
 
-    const rawPace = vFused !== null && vFused > 0.3 ? 1000 / vFused : null
+    const rawPace = vFused !== null && vFused > 0.1 ? 1000 / vFused : null
 
     // EMA smoothing
     this._paceEma = rawPace === null ? this._paceEma

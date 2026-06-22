@@ -27,7 +27,7 @@ export class DeviceMotionSensor {
   public available = false
 
   constructor() {
-    this.filter = createBandpass(1.0, 4.5, FS_NOMINAL)
+    this.filter = createBandpass(0.5, 4.5, FS_NOMINAL)
   }
 
   /** Must be called from a user gesture on iOS 13+. Returns true if granted. */

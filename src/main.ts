@@ -256,6 +256,52 @@ async function stopRun(b: Bridge): Promise<void> {
   state.runSamples = []
 }
 
+// ── Discard run (no save) ─────────────────────────────────────────────────────
+function discardRun(): void {
+  state.status            = 'idle'
+  state.startTime         = null
+  state.pausedElapsed     = 0
+  state.pauseStart        = null
+  state.totalDistanceM    = 0
+  state.lapStartDistanceM = 0
+  state.lapStartElapsedMs = 0
+  state.laps              = []
+  state.lastPace          = null
+  state.segmentPaceSPerKm = null
+  state.runSamples        = []
+  pendingDistM            = 0
+  totalStepEst            = 0
+  pace.resetEma()
+}
+
+// ── Stop / save modal ─────────────────────────────────────────────────────────
+function openStopModal(b: Bridge): void {
+  const modal = document.getElementById('stop-modal')
+  if (!modal || modal.style.display !== 'none') return
+  modal.style.display = 'flex'
+
+  const close = () => { modal.style.display = 'none' }
+
+  document.getElementById('stop-save-btn')!.onclick = async () => {
+    const btn = document.getElementById('stop-save-btn') as HTMLButtonElement
+    btn.textContent = '保存中...'
+    btn.disabled = true
+    await stopRun(b)
+    close()
+    btn.textContent = '保存して終了'
+    btn.disabled = false
+    await flushHUD()
+  }
+
+  document.getElementById('stop-discard-btn')!.onclick = () => {
+    discardRun()
+    close()
+    flushHUD().catch(console.error)
+  }
+
+  document.getElementById('stop-continue-btn')!.onclick = close
+}
+
 // ── Exit confirmation modal ───────────────────────────────────────────────────
 function openExitModal(): void {
   const modal = document.getElementById('exit-modal')
@@ -408,13 +454,12 @@ async function main(): Promise<void> {
           break
         }
 
-        // Double tap: exit modal (idle) | stop+save (running/paused)
+        // Double tap: exit modal (idle) | save/discard/continue modal (running/paused)
         case OsEventTypeList.DOUBLE_CLICK_EVENT: {
           if (state.status === 'idle') {
             openExitModal()
           } else {
-            await flashCell('tc', 'SAVING')
-            await stopRun(b)
+            openStopModal(b)
           }
           await flushHUD()
           break

@@ -84,3 +84,13 @@ body .rtm-id {
 .exit-btn-danger:active {
     background: #500;
 }
+.exit-btn-primary {
+    border-color: #468;
+    color: #8cf;
+}
+.stop-modal-btn-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 200px;
+}
