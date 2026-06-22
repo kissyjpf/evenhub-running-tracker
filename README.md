@@ -1,110 +1,99 @@
-# RTM Sync
+# Even G2 Running Tracker
 
-**Obsidian Remember The Milk Sync (Cow Edition 🐮)**
+**A running tracker app for Even Realities G1/G2 smart glasses, built on the EvenHub SDK.**
 
-This is a powerful plugin for [Obsidian](https://obsidian.md) that syncs tasks with [Remember The Milk](https://www.rememberthemilk.com/) (RTM).
-
-It is designed to be **fully compatible with the [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin** and offers granular control over which tasks to import.
-
-## New in v1.3.2 🚀
-
-* **Note Creation**: Create separate Obsidian notes from your RTM tasks. You can specify a dedicated save folder in settings.
-* **Import Notes & Links**: New option to import task notes and RTM web links as sub-bullets when inserting tasks to the editor.
-* **Bi-directional Linking**: When adding a task from an Obsidian note, a link back to your Obsidian note is automatically added to the RTM task.
-* **Default Due Date**: Automatically set a default due date (e.g. Today) when adding new tasks from Obsidian.
-
-## Features
-
-* **Download Tasks**: Fetch tasks with full metadata (Due Dates `📅`, Priorities `🔺`, Tags).
-* **Add Tasks**: Create a new task in RTM from the current line.
-* **Complete Tasks**: Mark a task as completed in RTM directly from Obsidian.
-* **Robust ID Linking**: Uses a stable Markdown link `[🐮](rtm:...)` at the start of the line. This ensures IDs remain visible in Source Mode but unobtrusive in Live Preview.
-
-## Prerequisite
-
-**You must obtain your own API Key from Remember The Milk.**
-
-1.  Go to [RTM API Key Request page](https://www.rememberthemilk.com/services/api/keys.rtm).
-2.  Apply for an API Key (Non-commercial use).
-3.  Note down your **API Key** and **Shared Secret**.
-
-## Installation
-
-1.  Create `obsidian-rtm-sync` folder in `.obsidian/plugins/`.
-2.  Place `main.js`, `manifest.json`, and `styles.css`.
-3.  Reload Obsidian and enable in **Community Plugins**.
-
-## Setup
-
-1.  Open Obsidian **Settings** > **Remember The Milk Settings**.
-2.  Enter **API Key** and **Shared Secret**.
-3.  Click **"Start Auth"**, authorize in browser, then click **"Finish Auth"**.
-
-## Usage
-
-### 1. Download Tasks
-* **Select & Import**: Run `RTM Sync: Select and import tasks`. Check tasks in the popup and import.
-* **Custom Filter**: Run `RTM Sync: Download tasks (Custom Filter)`. Enter query (e.g., `list:Inbox`) and import.
-
-**Output Example:**
-`- [ ] [🐮](rtm:...) Buy Milk 🔺 📅 2026-01-01 #Inbox`
-
-### 2. Add a Task
-* Write: `- [ ] Call Mom #Family`
-* Run `RTM Sync: Add cursor line to RTM`.
-* Task is sent to RTM, and `[🐮]` link is appended.
-
-### 3. Complete a Task
-* Place cursor on a synced task (with `[🐮]`).
-* Run `RTM Sync: Complete task at cursor`.
-* Task marks complete in RTM and Obsidian (`- [x]`).
-
-### 4. Create Note from RTM task
-* Run `RTM Sync: Create note from RTM task`.
-* Select tasks from the popup, and individual markdown notes will be created for each task.
+Displays real-time pace, cadence, distance, and lap data on the glasses' 576×288 mono green Micro-LED display — no phone screen required during a run.
 
 ---
 
-# 日本語 (Japanese)
+## Features
 
-Remember The Milk (RTM) のタスクを Obsidian 上で同期・管理するためのプラグインです。
-**Obsidian Tasks プラグイン** との互換性を重視しており、期限や優先度を Tasks 形式で出力します。
+- **Real-time pace display** — complementary filter fusing GPS + accelerometer (dead reckoning when GPS is unreliable)
+- **Cadence tracking** — steps per minute via DeviceMotion API or G2 IMU
+- **Auto-calibration** — learns your step length per cadence band from GPS data, persisted across sessions
+- **Lap recording** — per-lap distance and elapsed time
+- **Segment pace** — rolling average pace for the current lap
+- **Settings UI** — height, weight, calibration records management (swipe up from idle)
 
-## v1.3.1 の新機能 🚀
-* **ノート作成機能**: RTMのタスクから独立したObsidianノートを作成できます。設定画面から保存先フォルダを指定可能です。
-* **ノートとリンクのインポート**: エディタにタスクを追加する際、オプションでRTMのタスクノートとWebリンクをサブアイテムとしてインポートできるようになりました。
-* **双方向リンク**: Obsidianのノートからタスクを追加した際、自動でRTMのタスクノートにObsidianノートへのバックリンクが追加されます。
-* **デフォルト期限設定**: タスクを新規追加する際に、自動で「今日」などの期限を設定できるようになりました。
+## HUD Layout (576×288)
 
-## 主な機能
-* **Obsidian Tasks 完全互換**: 期限日 (`📅`) や優先度 (`🔺`) を標準的な形式で扱います。
-* **堅牢なID管理**: タスクIDを `[🐮](rtm:...)` というMarkdownリンクとして行頭に配置。ID消失を防ぎます。
-* **スマート追加**: Obsidian で `- [ ] タスク #タグ` と書けば、RTM 側でもタグ付けされます。
+```
+[elapsed]   [pace /km]   [distance]
+     [cadence spm  •  segment pace]
+[lap dist]  [status]   [k / calib]
+```
 
-## 設定方法
-1.  **APIキー**: [RTM API Key 申請ページ](https://www.rememberthemilk.com/services/api/keys.rtm) から取得してください。
-2.  **設定**: Obsidian設定画面で **API Key** と **Shared Secret** を入力し、認証してください。
+## Gesture Controls
 
-## 使い方
+| Gesture     | Idle           | Running        | Paused         |
+|-------------|----------------|----------------|----------------|
+| Double tap  | Start run      | Stop & save    | Stop & save    |
+| Single tap  | —              | Record lap     | Resume         |
+| Swipe up    | Open settings  | Pause          | —              |
+| Swipe down  | —              | —              | Resume         |
 
-### 1. タスクのダウンロード
-* **選択インポート**: コマンド `Select and import tasks` で一覧から選択して追加。
-* **条件指定**: コマンド `Download tasks (Custom Filter)` で検索条件（例: `list:Inbox`）を指定して追加。
+## Sensor Paths
 
-### 2. タスクの追加
-* エディタに行を作成: `- [ ] 新しいタスク #タグ`
-* コマンド `Add cursor line to RTM` を実行。
+The app selects the best available sensor automatically:
 
-### 3. タスクの完了
-* 同期済みのタスク（`[🐮]` がある行）でコマンド `Complete task at cursor` を実行。
+1. **DeviceMotion** (browser API) — preferred; provides cadence + vertical amplitude
+2. **G2 IMU** (SDK `imuControl`) — fallback via EvenHub SDK events
+3. **GPS only** — pace from GPS speed alone when no IMU data is available
 
-### 4. RTMタスクからノートを作成
-* コマンド `Create note from RTM task` を実行。
-* 一覧からタスクを選択すると、それぞれ独立したMarkdownノートが作成されます。
+## Pace Algorithm
 
-## Development
+```
+L_base  = calibrated step length (cadence × vertical amplitude → lookup table)
+k       = adaptive scalar updated from GPS when accuracy < 15m
+v_acc   = (cadence / 60) × k × L_base
+v_fused = 0.7 × v_gps + 0.3 × v_acc   (GPS valid)
+        = v_acc                          (GPS absent / inaccurate)
+pace    = EMA(1000 / v_fused, τ=4s)
+```
+
+Calibration records are auto-harvested at the end of each run and persisted to local storage on the glasses.
+
+## Requirements
+
+- Even Realities G1 or G2 smart glasses
+- [EvenHub](https://github.com/evenrealities) desktop app
+- Node.js 18+
+
+## Setup
 
 ```bash
 npm install
-npm run build
+npm run dev      # development server
+npm run build    # production build
 ```
+
+Deploy the built `dist/` folder as an EvenHub plugin.
+
+## Project Structure
+
+```
+src/
+  main.ts              # entry point, bridge init, gesture handling
+  hud.ts               # HUD renderer
+  pace.ts              # complementary filter pace estimator
+  state.ts             # app state (run lifecycle, laps)
+  types.ts             # shared types and defaults
+  sensors/
+    manager.ts         # sensor orchestration
+    device-motion.ts   # DeviceMotion API cadence extraction
+    g2-imu.ts          # G2 IMU cadence extraction
+    gps.ts             # GPS haversine distance, speed
+  model/
+    l-base.ts          # step-length lookup from calibration records
+    k-scalar.ts        # adaptive GPS correction scalar
+  calibration/
+    harvest.ts         # auto-harvest calibration record from run
+    records.ts         # persistence (load/save to local storage)
+    gate.ts            # quality gate for calibration acceptance
+  settings/
+    ui.ts              # settings overlay renderer
+```
+
+## License
+
+MIT
