@@ -6,6 +6,39 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+body {
+    background: #1a1a1a;
+    color: #ccc;
+    font-family: monospace;
+    padding: 8px;
+    margin: 0;
+}
+#app-status {
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+#help-guide {
+    margin-top: 12px;
+    padding: 12px 16px;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 6px;
+    font-family: -apple-system, sans-serif;
+}
+.help-title {
+    color: #8cf;
+    font-size: 11px;
+    letter-spacing: .05em;
+    margin: 0 0 8px;
+    text-transform: uppercase;
+}
+.help-list {
+    margin: 0;
+    padding: 0 0 0 16px;
+    color: #bbb;
+    font-size: 13px;
+    line-height: 2;
+}
 /* IDタグを非表示にする */
 body .rtm-id {
     display: none;

@@ -290,12 +290,14 @@ function openStopModal(b: Bridge): void {
     close()
     btn.textContent = '保存して終了'
     btn.disabled = false
+    showHelp(false)
     await flushHUD()
   }
 
   document.getElementById('stop-discard-btn')!.onclick = () => {
     discardRun()
     close()
+    showHelp(false)
     flushHUD().catch(console.error)
   }
 
@@ -347,11 +349,19 @@ function openSettings(b: Bridge): void {
   draw()
 }
 
+// ── Phone screen helpers ──────────────────────────────────────────────────────
+function setStatus(html: string): void {
+  const el = document.getElementById('app-status')
+  if (el) el.innerHTML = html
+}
+
+function showHelp(visible: boolean): void {
+  const el = document.getElementById('help-guide')
+  if (el) el.style.display = visible ? 'block' : 'none'
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  document.body.style.cssText = 'background:#1a1a1a;color:#ccc;font-family:monospace;padding:8px'
-  document.body.innerHTML = '<p>Initializing…</p>'
-
   try {
     const b = await waitForEvenAppBridge()
     bridge = b
@@ -441,6 +451,7 @@ async function main(): Promise<void> {
               if (granted) console.log('[sensors] upgraded to DeviceMotion')
             }
             startRun()
+            showHelp(true)
           } else if (state.status === 'running') {
             recordLap(state)
           } else if (state.status === 'paused') {
@@ -498,11 +509,11 @@ async function main(): Promise<void> {
       unsub()
     })
 
-    document.body.innerHTML = '<p style="color:#4a4">Running tracker ready.</p>'
+    setStatus('<span style="color:#4a4">Running tracker ready.</span>')
     await flushHUD()
 
   } catch (err: unknown) {
-    document.body.innerHTML += `<p style="color:#f44">Fatal: ${String(err)}</p>`
+    setStatus(`<span style="color:#f44">Fatal: ${String(err)}</span>`)
     console.error(err)
   }
 }
