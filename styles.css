@@ -6,6 +6,17 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+body {
+    background: #1a1a1a;
+    color: #ccc;
+    font-family: monospace;
+    padding: 8px;
+    margin: 0;
+}
+#app-status {
+    font-size: 13px;
+    margin-bottom: 8px;
+}
 /* IDタグを非表示にする */
 body .rtm-id {
     display: none;
@@ -40,3 +51,4 @@ body .rtm-id {
 .rtm-version-info {
     margin-bottom: 2em;
 }
+

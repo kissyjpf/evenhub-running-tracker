@@ -3,10 +3,16 @@
 
 export type RunStatus = 'idle' | 'running' | 'paused'
 
+export type HudModal =
+  | { type: 'none' }
+  | { type: 'stop', sel: number }   // sel 0=save+exit, 1=discard, 2=continue
+
 export interface HudInput {
   status: RunStatus
   elapsedMs: number
   totalDistanceM: number
+  laps: { number: number, distanceM: number, elapsedMs: number }[]
+  lapScrollOffset: number
   lapNumber: number
   lapDistanceM: number
   lapElapsedMs: number
@@ -15,19 +21,25 @@ export interface HudInput {
   segmentPaceSPerKm: number | null
   kValue: number
   calibRecordCount: number
+  totalSteps: number
+  calories: number
+  showSteps: boolean
+  showCalories: boolean
+  modal: HudModal
 }
 
 export interface HUDCells {
   tl: string  // elapsed time
   tc: string  // current pace — main focus
   tr: string  // total distance
-  ca: string  // cadence + segment pace (full width)
-  bl: string  // current lap: dist + elapsed
-  bc: string  // status icon + lap number
-  br: string  // debug: k + calib count
+  ca: string  // cadence + segment pace (full width, row 2)
+  mo1: string // modal option 1
+  mo2: string // modal option 2
+  mo3: string // modal option 3
+  bot: string // bottom row (lap + status + debug)
 }
 
-export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'bl', 'bc', 'br']
+export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'mo1', 'mo2', 'mo3', 'bot']
 
 function p2(n: number): string {
   return String(Math.floor(Math.abs(n))).padStart(2, '0')
@@ -48,7 +60,7 @@ function fmtPace(sPerKm: number | null): string {
   return s === 60 ? `${m + 1}:00` : `${m}:${p2(s)}`
 }
 
-export function renderHUD(h: HudInput): HUDCells {
+function renderBaseCells(h: HudInput): HUDCells {
   const distKm = (h.totalDistanceM / 1000).toFixed(2)
 
   if (h.status === 'idle') {
@@ -60,9 +72,8 @@ export function renderHUD(h: HudInput): HUDCells {
       tc: 'READY',
       tr: '0.00km',
       ca: calStr,
-      bl: '',
-      bc: '○ dbl=start',
-      br: '',
+      mo1: ' ', mo2: ' ', mo3: ' ',
+      bot: '○ tap=start  dbl=exit',
     }
   }
 
@@ -72,13 +83,59 @@ export function renderHUD(h: HudInput): HUDCells {
   const lapDistKm = (h.lapDistanceM / 1000).toFixed(2)
   const icon    = h.status === 'running' ? '●' : '◐'
 
+  let cadPart = `CAD ${cadStr}`
+  if (h.showSteps) cadPart += `  ${h.totalSteps}stp`
+  let segPart = `SEG ${segStr}/km`
+  if (h.showCalories && h.calories > 0) segPart += `  ${Math.round(h.calories)}kcal`
+
+  let allLines: string[] = []
+
+  for (const l of h.laps) {
+    const lDist = (l.distanceM / 1000).toFixed(2)
+    allLines.push(`L${l.number}: ${lDist}km ${fmtElapsed(l.elapsedMs)}`)
+  }
+  allLines.push(`L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}  ${icon}  k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`)
+
+  const MAX_LINES = 6
+  let offset = h.lapScrollOffset
+  const maxOffset = Math.max(0, allLines.length - MAX_LINES)
+  if (offset > maxOffset) offset = maxOffset
+  if (offset < 0) offset = 0
+
+  let visibleLines = allLines
+  if (allLines.length > MAX_LINES) {
+    const startIdx = allLines.length - MAX_LINES - offset
+    const endIdx = allLines.length - offset
+    visibleLines = allLines.slice(startIdx, endIdx)
+  }
+
   return {
     tl: fmtElapsed(h.elapsedMs),
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
-    ca: `CAD ${cadStr}  •  SEG ${segStr}/km`,
-    bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
-    bc: `${icon} lap${h.lapNumber}`,
-    br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,
+    ca: `${cadPart}  •  ${segPart}`,
+    mo1: ' ', mo2: ' ', mo3: ' ',
+    bot: visibleLines.join('\n'),
   }
+}
+
+export function renderHUD(h: HudInput): HUDCells {
+  const cells = renderBaseCells(h)
+
+  const m = h.modal
+  if (m.type === 'stop') {
+    // Hide all normal HUD elements to show a "separate screen"
+    cells.tl = ' '
+    cells.tc = ' '
+    cells.tr = ' '
+    cells.ca = ' '
+    cells.bot = ' '
+
+    const opts = ['Save + exit', 'Discard', 'Continue']
+    cells.mo1 = m.sel === 0 ? `> ${opts[0]} <` : `  ${opts[0]}  `
+    cells.mo2 = m.sel === 1 ? `> ${opts[1]} <` : `  ${opts[1]}  `
+    cells.mo3 = m.sel === 2 ? `> ${opts[2]} <` : `  ${opts[2]}  `
+  }
+
+  return cells
 }

@@ -4,7 +4,7 @@
   "description": "Running tracker for Even Realities G1/G2 smart glasses",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build"
+    "build": "node scripts/bump-version.mjs && tsc && vite build && npx evenhub pack app.json dist -o running-tracker.ehpk"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.10"

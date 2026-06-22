@@ -5,8 +5,12 @@
 
 import { createBandpass, processBandpass, estimateCadence, rmsAmplitude, BandpassFilter } from '../signal'
 
-const FS_NOMINAL = 60         // nominal sample rate (actual varies, iOS ≤60Hz)
-const WINDOW_S   = 5          // sliding window for autocorrelation
+const F_LOW      = 0.5        // bandpass low cutoff (Hz)
+const F_HIGH     = 4.5        // bandpass high cutoff (Hz)
+const FS_INIT    = 60         // initial sample-rate guess (iOS default ≈60Hz)
+const FS_MIN     = 10         // clamp for measured sample rate
+const FS_MAX     = 120
+const WINDOW_S   = 5          // sliding window for autocorrelation (seconds)
 const UPDATE_MS  = 1000       // cadence update interval
 
 export type CadenceCallback = (spm: number | null, vertAmp: number) => void
@@ -16,8 +20,12 @@ const GRAVITY_ALPHA = 0.98
 
 export class DeviceMotionSensor {
   private filter: BandpassFilter
+  private filterFs = FS_INIT
   private buf: number[] = []
   private lastUpdateMs = 0
+  private lastSampleMs = 0      // perf timestamp of previous motion event
+  private fsEma = FS_INIT       // measured sample rate (EMA)
+  private fsInit = false
   private gravEma = { x: 0, y: 0, z: -9.81 }  // earth gravity estimate
   private gravInit = false
   private callback: CadenceCallback | null = null
@@ -27,7 +35,7 @@ export class DeviceMotionSensor {
   public available = false
 
   constructor() {
-    this.filter = createBandpass(1.0, 4.5, FS_NOMINAL)
+    this.filter = createBandpass(F_LOW, F_HIGH, FS_INIT)
   }
 
   /** Must be called from a user gesture on iOS 13+. Returns true if granted. */
@@ -77,16 +85,37 @@ export class DeviceMotionSensor {
 
     if (vertical === null) return
 
+    // Measure the real sample rate — iOS does not guarantee 60Hz, and a wrong
+    // fs scales the cadence directly (e.g. half-rate reads as double cadence).
+    const tNow = performance.now()
+    if (this.lastSampleMs > 0) {
+      const dt = tNow - this.lastSampleMs
+      if (dt > 0 && dt < 200) {  // ignore startup gaps / backgrounding
+        const inst = 1000 / dt
+        this.fsEma = this.fsInit ? 0.95 * this.fsEma + 0.05 * inst : inst
+        this.fsInit = true
+      }
+    }
+    this.lastSampleMs = tNow
+    const fs = Math.max(FS_MIN, Math.min(FS_MAX, this.fsEma))
+
+    // Re-tune the bandpass if the measured rate drifts >10% from what it was
+    // built for (its cutoffs are fs-dependent). Converges within a second.
+    if (Math.abs(fs - this.filterFs) / this.filterFs > 0.1) {
+      this.filter = createBandpass(F_LOW, F_HIGH, fs)
+      this.filterFs = fs
+    }
+
     const filtered = processBandpass(vertical, this.filter)
     this.buf.push(filtered)
 
-    const maxBuf = Math.ceil(FS_NOMINAL * WINDOW_S)
+    const maxBuf = Math.ceil(fs * WINDOW_S)
     if (this.buf.length > maxBuf) this.buf.splice(0, this.buf.length - maxBuf)
 
     const now = Date.now()
-    if (now - this.lastUpdateMs >= UPDATE_MS && this.buf.length >= FS_NOMINAL * 2) {
+    if (now - this.lastUpdateMs >= UPDATE_MS && this.buf.length >= fs * 2) {
       this.lastUpdateMs = now
-      const spm = estimateCadence(this.buf, FS_NOMINAL)
+      const spm = estimateCadence(this.buf, fs)
       const amp = rmsAmplitude(this.buf)
       this.cadenceSpm = spm
       this.verticalAmp = amp

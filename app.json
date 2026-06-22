@@ -1,7 +1,20 @@
 {
-  "name": "running-tracker",
-  "displayName": "Running Tracker",
-  "version": "2.0.0",
-  "description": "GPS + accelerometer running pace tracker for Even G2",
-  "permissions": ["imu", "gps", "storage"]
+  "package_id": "com.kishiyama.runningtracker",
+  "edition": "202601",
+  "name": "Running Tracker",
+  "tagline": "Real-time pace on your G2 — GPS + motion sensor fusion, no phone glances needed.",
+  "version": "2.0.22",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "location",
+      "desc": "This app uses GPS location to measure running distance and pace."
+    }
+  ],
+  "supported_languages": [
+    "en",
+    "ja"
+  ]
 }

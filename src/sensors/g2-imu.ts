@@ -5,8 +5,10 @@
 
 import { estimateCadence, rmsAmplitude } from '../signal'
 
-const FS = 10            // G2 IMU fixed at 10 Hz (100ms)
-const WINDOW_S = 9       // 9s window → 90 samples (adequate ACF resolution)
+const FS_INIT = 10       // initial guess; actual rate is measured from feeds
+const FS_MIN = 2
+const FS_MAX = 50
+const WINDOW_S = 9       // 9s window (adequate ACF resolution at ~10Hz)
 const UPDATE_MS = 1000
 const MA_LEN = 5         // ~0.5s moving average for DC removal
 
@@ -20,6 +22,9 @@ export class G2ImuSensor {
   private gravCount = 0
   private readonly GRAV_INIT = 30   // 3s of slow init
   private lastUpdateMs = 0
+  private lastFeedMs = 0            // wall-clock of previous feed
+  private fsEma = FS_INIT           // measured sample rate (EMA)
+  private fsInit = false
   private callback: CadenceCallback | null = null
 
   public cadenceSpm: number | null = null
@@ -34,6 +39,20 @@ export class G2ImuSensor {
   /** Called by main.ts for each IMU_DATA_REPORT event. */
   feed(raw: ImuRaw): void {
     const { x, y, z } = raw
+
+    // Measure the real report rate rather than trusting a fixed 10Hz —
+    // a wrong fs scales cadence directly.
+    const tNow = Date.now()
+    if (this.lastFeedMs > 0) {
+      const dt = tNow - this.lastFeedMs
+      if (dt > 0 && dt < 1000) {
+        const inst = 1000 / dt
+        this.fsEma = this.fsInit ? 0.9 * this.fsEma + 0.1 * inst : inst
+        this.fsInit = true
+      }
+    }
+    this.lastFeedMs = tNow
+    const fs = Math.max(FS_MIN, Math.min(FS_MAX, this.fsEma))
 
     // Slow EMA for gravity estimation
     if (this.gravCount < this.GRAV_INIT) {
@@ -57,13 +76,13 @@ export class G2ImuSensor {
     const hpVal = norm - dc
 
     this.buf.push(hpVal)
-    const maxBuf = FS * WINDOW_S
+    const maxBuf = Math.ceil(fs * WINDOW_S)
     if (this.buf.length > maxBuf) this.buf.splice(0, this.buf.length - maxBuf)
 
-    const now = Date.now()
-    if (now - this.lastUpdateMs >= UPDATE_MS && this.buf.length >= FS * 3) {
+    const now = tNow
+    if (now - this.lastUpdateMs >= UPDATE_MS && this.buf.length >= fs * 3) {
       this.lastUpdateMs = now
-      const spm = estimateCadence(this.buf, FS)
+      const spm = estimateCadence(this.buf, fs)
       const amp = rmsAmplitude(this.buf)
       this.cadenceSpm = spm
       this.verticalAmp = amp

@@ -31,7 +31,7 @@ export function acceptanceGate(input: GateInput, settings: Settings): GateResult
   if (input.cadence_sd >= 5)
     return { pass: false, reason: `cadence SD ${input.cadence_sd.toFixed(1)} ≥ 5 spm` }
 
-  if (input.step_length_m < 0.5 || input.step_length_m > 2.2)
+  if (input.step_length_m < 0.3 || input.step_length_m > 2.2)
     return { pass: false, reason: `step_length ${input.step_length_m.toFixed(3)}m outside [0.5, 2.2]` }
 
   return { pass: true, reason: 'ok' }

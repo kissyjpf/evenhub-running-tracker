@@ -7,10 +7,9 @@ import { bandCoverage, editRecordDistance, deleteRecord } from '../calibration/r
 export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
   onRecordsChange(r: CalibRecord[]): void
-  onClose(): void
 }
 
-const BAND_LABELS = ['<3.0 m/s', '3.0–3.5', '3.5–4.0', '4.0–4.5', '>4.5 m/s']
+const BAND_LABELS = ['>5:33 /km', '4:46-5:33', '4:10-4:45', '3:42-4:09', '<3:42 /km']
 
 export function renderSettingsUI(
   root: HTMLElement,
@@ -20,46 +19,47 @@ export function renderSettingsUI(
 ): void {
   root.innerHTML = `
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, sans-serif; padding: 16px;
-    background: #111; color: #ddd; margin: 0; }
-  h2 { font-size: 14px; color: #8cf; margin: 16px 0 6px; letter-spacing: .05em; }
-  label { display: flex; align-items: center; gap: 8px;
-    margin: 6px 0; font-size: 13px; }
-  input[type=number] { background: #222; color: #eee; border: 1px solid #444;
-    border-radius: 4px; padding: 4px 8px; width: 90px; font-size: 13px; }
-  .btn { background: #222; color: #ddd; border: 1px solid #444;
-    border-radius: 4px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
-  .btn:active { background: #333; }
-  .btn.danger { border-color: #933; color: #f88; }
-  .btn.primary { border-color: #468; color: #8cf; }
-  .coverage { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-  .band { padding: 4px 10px; border-radius: 12px; font-size: 11px; }
-  .band-empty  { background: #222; color: #555; border: 1px solid #333; }
-  .band-half   { background: #133; color: #7cf; border: 1px solid #468; }
-  .band-full   { background: #134; color: #afa; border: 1px solid #474; }
-  table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
-  th { color: #666; font-weight: normal; text-align: left;
-    padding: 4px 4px; border-bottom: 1px solid #222; }
-  td { padding: 5px 4px; border-bottom: 1px solid #1a1a1a; vertical-align: middle; }
-  .dist-in { width: 64px; background: #222; color: #eee; border: 1px solid #333;
-    border-radius: 3px; padding: 2px 4px; font-size: 11px; }
-  .src-tag { font-size: 10px; color: #666; }
-  .src-tag.manual { color: #8cf; }
-  .back-row { margin-top: 20px; }
+  #settings-root * { box-sizing: border-box; }
+  .sw { max-width: 480px; margin: 0 auto; padding: 16px;
+    font-family: -apple-system, sans-serif; color: #ddd; }
+  .sw h2 { font-size: 16px; color: #8cf; margin: 18px 0 8px; letter-spacing: .05em; }
+  .sw label { display: flex; align-items: center; gap: 8px;
+    margin: 8px 0; font-size: 15px; }
+  .sw input[type=number] { background: #222; color: #eee; border: 1px solid #444;
+    border-radius: 4px; padding: 6px 10px; width: 100px; font-size: 15px; }
+  .sw .btn { background: #222; color: #ddd; border: 1px solid #444;
+    border-radius: 4px; padding: 7px 16px; cursor: pointer; font-size: 14px; }
+  .sw .btn:active { background: #333; }
+  .sw .btn.danger { border-color: #933; color: #f88; }
+  .sw .btn.primary { border-color: #468; color: #8cf; }
+  .sw .coverage { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .sw .band { padding: 5px 12px; border-radius: 12px; font-size: 13px; }
+  .sw .band-empty  { background: #222; color: #555; border: 1px solid #333; }
+  .sw .band-half   { background: #133; color: #7cf; border: 1px solid #468; }
+  .sw .band-full   { background: #134; color: #afa; border: 1px solid #474; }
+  .sw table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  .sw th { color: #777; font-weight: normal; text-align: left;
+    padding: 5px 4px; border-bottom: 1px solid #222; }
+  .sw td { padding: 7px 4px; border-bottom: 1px solid #1a1a1a; vertical-align: middle; }
+  .sw .dist-in { width: 72px; background: #222; color: #eee; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font-size: 13px; }
+  .sw .src-tag { font-size: 12px; color: #666; }
+  .sw .src-tag.manual { color: #8cf; }
 </style>
+<div class="sw">
+
 <h2>PROFILE</h2>
 <label>Height
   <input type="number" id="height" min="100" max="250" value="${settings.height_cm}" />
-  <span style="font-size:12px;color:#666">cm</span>
+  <span style="font-size:13px;color:#666">cm</span>
 </label>
 <label>Weight (optional)
   <input type="number" id="weight" min="30" max="200"
     value="${settings.weight_kg !== null ? settings.weight_kg : ''}" />
-  <span style="font-size:12px;color:#666">kg</span>
+  <span style="font-size:13px;color:#666">kg</span>
 </label>
 <button class="btn primary" id="save-profile">Save profile</button>
-<div id="profile-msg" style="font-size:11px;color:#4a4;margin:4px 0;min-height:14px"></div>
+<div id="profile-msg" style="font-size:13px;color:#4a4;margin:6px 0;min-height:16px"></div>
 
 <h2>SPEED BAND COVERAGE</h2>
 <div class="coverage" id="coverage"></div>
@@ -73,8 +73,6 @@ export function renderSettingsUI(
   <tbody id="rec-body"></tbody>
 </table>
 
-<div class="back-row">
-  <button class="btn" id="close-btn">← Back</button>
 </div>
 `
 
@@ -153,5 +151,4 @@ export function renderSettingsUI(
     })
   })
 
-  root.querySelector('#close-btn')!.addEventListener('click', cb.onClose)
 }

@@ -64,7 +64,7 @@ export function processBandpass(x: number, f: BandpassFilter): number {
 }
 
 // Autocorrelation-based cadence estimation.
-// Returns spm clamped to [140, 220], or null if signal is too weak.
+// Returns spm in [50, 200], or null if signal is too weak or not periodic.
 // Optimized: O(n * lagRange) where lagRange is typically small.
 export function estimateCadence(samples: number[], fs: number): number | null {
   const n = samples.length
@@ -83,30 +83,50 @@ export function estimateCadence(samples: number[], fs: number): number | null {
     variance += x[i] ** 2
   }
   variance /= n
-  if (variance < 1e-8) return null
 
-  // Lag range: 140–220 spm
-  const lagMin = Math.max(1, Math.floor((fs * 60) / 220))
-  const lagMax = Math.min(n - 1, Math.floor((fs * 60) / 140))
+  // Require meaningful signal amplitude (~0.22 m/s² RMS minimum)
+  if (variance < 0.05) return null
+
+  // Lag range: 50–200 spm (covers walking and running)
+  const lagMin = Math.max(1, Math.floor((fs * 60) / 200))
+  const lagMax = Math.min(n - 1, Math.floor((fs * 60) / 50))
   if (lagMin >= lagMax) return null
 
+  const acf = new Float64Array(lagMax + 1)
   let bestLag = lagMin
   let bestAcf = -Infinity
 
   for (let lag = lagMin; lag <= lagMax; lag++) {
-    let acf = 0
+    let sum = 0
     const count = n - lag
     for (let i = 0; i < count; i++) {
-      acf += (x[i] ?? 0) * (x[i + lag] ?? 0)
+      sum += (x[i] ?? 0) * (x[i + lag] ?? 0)
     }
-    acf /= count
-    if (acf > bestAcf) { bestAcf = acf; bestLag = lag }
+    sum /= count
+    acf[lag] = sum
+    if (sum > bestAcf) { bestAcf = sum; bestLag = lag }
   }
 
-  if (bestAcf <= 0) return null
+  // Require at least 15% normalized correlation — rejects aperiodic noise
+  if (bestAcf / variance < 0.15) return null
 
-  const cadence = (fs * 60) / bestLag
-  return Math.max(140, Math.min(220, cadence))
+  // Parabolic interpolation around the peak for sub-sample lag resolution.
+  // Without this, integer-lag quantisation makes cadence jump ~8–11 spm at a
+  // time (worse at high spm / low sample rate), giving a jittery reading.
+  let refinedLag = bestLag
+  if (bestLag > lagMin && bestLag < lagMax) {
+    const ym1 = acf[bestLag - 1] ?? 0
+    const y0  = acf[bestLag] ?? 0
+    const yp1 = acf[bestLag + 1] ?? 0
+    const denom = ym1 - 2 * y0 + yp1
+    if (denom !== 0) {
+      const delta = 0.5 * (ym1 - yp1) / denom
+      if (delta > -1 && delta < 1) refinedLag = bestLag + delta
+    }
+  }
+
+  const cadence = (fs * 60) / refinedLag
+  return Math.max(50, Math.min(200, cadence))
 }
 
 // RMS amplitude of a buffer
