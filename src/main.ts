@@ -27,10 +27,14 @@ const CANVAS_H  = 288
 const ROW_H     = 28
 const SIDE_W    = 130
 const CENTER_W  = CANVAS_W - SIDE_W * 2   // 316
-const TOP_Y     = 0
-const MID_Y     = ROW_H                               // 28  — cadence/segment row
-const MODAL_Y   = Math.round((CANVAS_H - ROW_H) / 2) // 130 — modal confirmation (centre)
-const BOT_Y     = CANVAS_H - ROW_H                   // 260
+
+const ROW1_Y    = ROW_H                   // 28 (2nd row)
+const ROW2_Y    = ROW_H * 2               // 56 (3rd row)
+const BOT_Y     = ROW_H * 4               // 112 (1 line gap below CAD)
+
+const MODAL_Y1  = Math.round(CANVAS_H / 2) - Math.round(ROW_H * 1.5)
+const MODAL_Y2  = Math.round((CANVAS_H - ROW_H) / 2)
+const MODAL_Y3  = Math.round(CANVAS_H / 2) + Math.round(ROW_H * 0.5)
 
 // ── Module-level singletons ──────────────────────────────────────────────────
 const state   = makeInitialState()
@@ -65,9 +69,10 @@ function makeContainer(
   })
 }
 
-let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', mo:'', bl:'', bc:'', br:'' }
+let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', mo1:'', mo2:'', mo3:'', bot:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
+let lapScrollOffset = 0
 
 async function flushHUD(): Promise<void> {
   if (!bridge) return
@@ -112,6 +117,8 @@ function buildHudInput() {
     status:              state.status,
     elapsedMs:           activeElapsedMs(state),
     totalDistanceM:      state.totalDistanceM,
+    laps:                state.laps,
+    lapScrollOffset,
     lapNumber:           state.laps.length + 1,
     lapDistanceM:        lapDistanceM(state),
     lapElapsedMs:        lapElapsedMs(state),
@@ -230,6 +237,7 @@ function startRun(): void {
   state.runSamples         = []
   pendingDistM             = 0
   totalStepEst             = 0
+  lapScrollOffset          = 0
   pace.resetEma()
 }
 
@@ -269,6 +277,7 @@ function discardRun(): void {
   state.runSamples        = []
   pendingDistM            = 0
   totalStepEst            = 0
+  lapScrollOffset         = 0
   pace.resetEma()
 }
 
@@ -277,19 +286,7 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
   const m = hudModal
   if (m.type === 'none') return
 
-  if (m.type === 'exit') {
-    if (type === OsEventTypeList.SCROLL_TOP_EVENT || type === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      hudModal = { type: 'exit', sel: 1 - m.sel }
-    } else if (type === OsEventTypeList.CLICK_EVENT) {
-      hudModal = { type: 'none' }
-      await flushHUD()
-      if (m.sel === 0) window.close()
-      return
-    } else {
-      hudModal = { type: 'none' }
-    }
-
-  } else if (m.type === 'stop') {
+  if (m.type === 'stop') {
     if (type === OsEventTypeList.SCROLL_TOP_EVENT) {
       hudModal = { type: 'stop', sel: (m.sel + 1) % 3 }
     } else if (type === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
@@ -360,14 +357,14 @@ async function main(): Promise<void> {
     const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
       containerTotalNum: 8,
       textObject: [
-        makeContainer(1, 'tl', 0,                 TOP_Y,   SIDE_W,   ROW_H, initial.tl, 1),
-        makeContainer(2, 'tc', SIDE_W,             TOP_Y,   CENTER_W, ROW_H, initial.tc, 0),
-        makeContainer(3, 'tr', CANVAS_W - SIDE_W, TOP_Y,   SIDE_W,   ROW_H, initial.tr, 0),
-        makeContainer(4, 'ca', 0,                 MID_Y,   CANVAS_W, ROW_H, initial.ca, 0),
-        makeContainer(5, 'mo', 0,                 MODAL_Y, CANVAS_W, ROW_H, initial.mo, 0),
-        makeContainer(6, 'bl', 0,                 BOT_Y,   SIDE_W,   ROW_H, initial.bl, 0),
-        makeContainer(7, 'bc', SIDE_W,             BOT_Y,   CENTER_W, ROW_H, initial.bc, 0),
-        makeContainer(8, 'br', CANVAS_W - SIDE_W, BOT_Y,   SIDE_W,   ROW_H, initial.br, 0),
+        makeContainer(1, 'tl', 0,                 ROW1_Y,  SIDE_W,   ROW_H, initial.tl, 1),
+        makeContainer(2, 'tc', SIDE_W,             ROW1_Y,  CENTER_W, ROW_H, initial.tc, 0),
+        makeContainer(3, 'tr', CANVAS_W - SIDE_W, ROW1_Y,  SIDE_W,   ROW_H, initial.tr, 0),
+        makeContainer(4, 'ca', 0,                 ROW2_Y,  CANVAS_W, ROW_H, initial.ca, 0),
+        makeContainer(5, 'mo1', 0,                MODAL_Y1, CANVAS_W, ROW_H, initial.mo1, 0),
+        makeContainer(6, 'mo2', 0,                MODAL_Y2, CANVAS_W, ROW_H, initial.mo2, 0),
+        makeContainer(7, 'mo3', 0,                MODAL_Y3, CANVAS_W, ROW_H, initial.mo3, 0),
+        makeContainer(8, 'bot', 0,                BOT_Y,   CANVAS_W, CANVAS_H - BOT_Y, initial.bot, 0),
       ],
     }))
 
@@ -434,6 +431,7 @@ async function main(): Promise<void> {
             startRun()
           } else if (state.status === 'running') {
             recordLap(state)
+            lapScrollOffset = 0
           } else if (state.status === 'paused') {
             if (state.pauseStart !== null) {
               state.pausedElapsed += Date.now() - state.pauseStart
@@ -445,35 +443,31 @@ async function main(): Promise<void> {
           break
         }
 
-        // Double tap: exit modal (idle) | stop modal (running/paused)
+        // Double tap: system exit dialog (idle) | stop modal (running/paused)
         case OsEventTypeList.DOUBLE_CLICK_EVENT: {
-          hudModal = state.status === 'idle'
-            ? { type: 'exit', sel: 0 }
-            : { type: 'stop', sel: 0 }
-          await flushHUD()
-          break
-        }
-
-        // Swipe up: pause (running)
-        case OsEventTypeList.SCROLL_TOP_EVENT: {
-          if (state.status === 'running') {
-            state.status     = 'paused'
-            state.pauseStart = Date.now()
-          }
-          await flushHUD()
-          break
-        }
-
-        // Swipe down: resume (paused)
-        case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
-          if (state.status === 'paused') {
-            if (state.pauseStart !== null) {
-              state.pausedElapsed += Date.now() - state.pauseStart
-              state.pauseStart = null
-            }
-            state.status = 'running'
+          if (state.status === 'idle') {
+            await b.shutDownPageContainer(1)
+          } else {
+            hudModal = { type: 'stop', sel: 0 }
             await flushHUD()
           }
+          break
+        }
+
+        // Swipe up: scroll laps towards newer laps (down)
+        case OsEventTypeList.SCROLL_TOP_EVENT: {
+          lapScrollOffset = Math.max(0, lapScrollOffset - 1)
+          await flushHUD()
+          break
+        }
+
+        // Swipe down: scroll laps towards older laps (up)
+        case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
+          const MAX_LINES = 6
+          const allLinesCount = state.laps.length + 1
+          const maxOffset = Math.max(0, allLinesCount - MAX_LINES)
+          lapScrollOffset = Math.min(maxOffset, lapScrollOffset + 1)
+          await flushHUD()
           break
         }
       }

@@ -5,13 +5,14 @@ export type RunStatus = 'idle' | 'running' | 'paused'
 
 export type HudModal =
   | { type: 'none' }
-  | { type: 'exit', sel: number }   // sel 0=exit, 1=cancel
   | { type: 'stop', sel: number }   // sel 0=save+exit, 1=discard, 2=continue
 
 export interface HudInput {
   status: RunStatus
   elapsedMs: number
   totalDistanceM: number
+  laps: { number: number, distanceM: number, elapsedMs: number }[]
+  lapScrollOffset: number
   lapNumber: number
   lapDistanceM: number
   lapElapsedMs: number
@@ -32,13 +33,13 @@ export interface HUDCells {
   tc: string  // current pace — main focus
   tr: string  // total distance
   ca: string  // cadence + segment pace (full width, row 2)
-  mo: string  // modal confirmation (centre, empty when no modal)
-  bl: string  // current lap: dist + elapsed
-  bc: string  // status icon + lap number
-  br: string  // debug: k + calib count
+  mo1: string // modal option 1
+  mo2: string // modal option 2
+  mo3: string // modal option 3
+  bot: string // bottom row (lap + status + debug)
 }
 
-export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'mo', 'bl', 'bc', 'br']
+export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'mo1', 'mo2', 'mo3', 'bot']
 
 function p2(n: number): string {
   return String(Math.floor(Math.abs(n))).padStart(2, '0')
@@ -71,10 +72,8 @@ function renderBaseCells(h: HudInput): HUDCells {
       tc: 'READY',
       tr: '0.00km',
       ca: calStr,
-      mo: '',
-      bl: '',
-      bc: '○ tap=start  dbl=exit',
-      br: '',
+      mo1: ' ', mo2: ' ', mo3: ' ',
+      bot: '○ tap=start  dbl=exit',
     }
   }
 
@@ -89,29 +88,53 @@ function renderBaseCells(h: HudInput): HUDCells {
   let segPart = `SEG ${segStr}/km`
   if (h.showCalories && h.calories > 0) segPart += `  ${Math.round(h.calories)}kcal`
 
+  let allLines: string[] = []
+
+  for (const l of h.laps) {
+    const lDist = (l.distanceM / 1000).toFixed(2)
+    allLines.push(`L${l.number}: ${lDist}km ${fmtElapsed(l.elapsedMs)}`)
+  }
+  allLines.push(`L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}  ${icon}  k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`)
+
+  const MAX_LINES = 6
+  let offset = h.lapScrollOffset
+  const maxOffset = Math.max(0, allLines.length - MAX_LINES)
+  if (offset > maxOffset) offset = maxOffset
+  if (offset < 0) offset = 0
+
+  let visibleLines = allLines
+  if (allLines.length > MAX_LINES) {
+    const startIdx = allLines.length - MAX_LINES - offset
+    const endIdx = allLines.length - offset
+    visibleLines = allLines.slice(startIdx, endIdx)
+  }
+
   return {
     tl: fmtElapsed(h.elapsedMs),
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
     ca: `${cadPart}  •  ${segPart}`,
-    mo: '',
-    bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
-    bc: `${icon} lap${h.lapNumber}`,
-    br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,
+    mo1: ' ', mo2: ' ', mo3: ' ',
+    bot: visibleLines.join('\n'),
   }
 }
 
 export function renderHUD(h: HudInput): HUDCells {
   const cells = renderBaseCells(h)
 
-  // Modal: write to the centre row (mo) only — ca/top/bottom keep live data
   const m = h.modal
-  if (m.type === 'exit') {
-    const opts = ['Exit', 'Cancel']
-    cells.mo = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
-  } else if (m.type === 'stop') {
-    const opts = ['Save+exit', 'Discard', 'Continue']
-    cells.mo = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+  if (m.type === 'stop') {
+    // Hide all normal HUD elements to show a "separate screen"
+    cells.tl = ' '
+    cells.tc = ' '
+    cells.tr = ' '
+    cells.ca = ' '
+    cells.bot = ' '
+
+    const opts = ['Save + exit', 'Discard', 'Continue']
+    cells.mo1 = m.sel === 0 ? `> ${opts[0]} <` : `  ${opts[0]}  `
+    cells.mo2 = m.sel === 1 ? `> ${opts[1]} <` : `  ${opts[1]}  `
+    cells.mo3 = m.sel === 2 ? `> ${opts[2]} <` : `  ${opts[2]}  `
   }
 
   return cells

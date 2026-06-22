@@ -1,7 +1,7 @@
 // Speed bands (m/s): <3.0 | 3.0-3.5 | 3.5-4.0 | 4.0-4.5 | >4.5
 export const BAND_EDGES = [3.0, 3.5, 4.0, 4.5] as const
 export type Band = 0 | 1 | 2 | 3 | 4
-export const BAND_LABELS = ['<3.0', '3.0-3.5', '3.5-4.0', '4.0-4.5', '>4.5'] as const
+export const BAND_LABELS = ['>5:33 /km', '4:46-5:33', '4:10-4:45', '3:42-4:09', '<3:42 /km'] as const
 
 export function speedToBand(ms: number): Band {
   if (ms < BAND_EDGES[0]) return 0
