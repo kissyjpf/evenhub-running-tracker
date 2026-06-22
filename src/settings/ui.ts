@@ -7,7 +7,6 @@ import { bandCoverage, editRecordDistance, deleteRecord } from '../calibration/r
 export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
   onRecordsChange(r: CalibRecord[]): void
-  onClose(): void
 }
 
 const BAND_LABELS = ['<3.0 m/s', '3.0–3.5', '3.5–4.0', '4.0–4.5', '>4.5 m/s']
@@ -47,7 +46,6 @@ export function renderSettingsUI(
     border-radius: 3px; padding: 2px 4px; font-size: 11px; }
   .src-tag { font-size: 10px; color: #666; }
   .src-tag.manual { color: #8cf; }
-  .back-row { margin-top: 20px; }
 </style>
 
 <h2>PROFILE</h2>
@@ -75,9 +73,6 @@ export function renderSettingsUI(
   <tbody id="rec-body"></tbody>
 </table>
 
-<div class="back-row">
-  <button class="btn" id="close-btn">← Back</button>
-</div>
 `
 
   // Band coverage
@@ -155,5 +150,4 @@ export function renderSettingsUI(
     })
   })
 
-  root.querySelector('#close-btn')!.addEventListener('click', cb.onClose)
 }

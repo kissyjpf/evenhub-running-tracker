@@ -75,8 +75,6 @@ async function flushHUD(): Promise<void> {
   const h = buildHudInput()
   const cells = renderHUD(h)
 
-  if (settingsOpen) return
-
   for (let i = 0; i < CELL_KEYS.length; i++) {
     const key = CELL_KEYS[i]!
     if (cells[key] === cachedCells[key]) continue
@@ -317,34 +315,22 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
   await flushHUD()
 }
 
-// ── Settings WebView ──────────────────────────────────────────────────────────
-let settingsOpen = false
-
-function openSettings(b: Bridge): void {
-  if (settingsOpen) return
-  settingsOpen = true
-  const overlay = document.createElement('div')
-  overlay.style.cssText = 'position:fixed;inset:0;background:#111;overflow:auto;z-index:10'
-  document.body.appendChild(overlay)
-
-  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, {
+// ── Settings panel (always visible on phone) ──────────────────────────────────
+function renderSettings(b: Bridge): void {
+  const root = document.getElementById('settings-root')
+  if (!root) return
+  renderSettingsUI(root, state.settings, state.calibRecords, {
     onSettingsChange(s) {
       state.settings = s
       persistAll(b).catch(console.error)
-      draw()
+      renderSettings(b)
     },
     onRecordsChange(r) {
       state.calibRecords = r
       persistAll(b).catch(console.error)
-      draw()
-    },
-    onClose() {
-      document.body.removeChild(overlay)
-      settingsOpen = false
-      flushHUD().catch(console.error)
+      renderSettings(b)
     },
   })
-  draw()
 }
 
 // ── Phone screen helpers ──────────────────────────────────────────────────────
@@ -473,13 +459,11 @@ async function main(): Promise<void> {
           break
         }
 
-        // Swipe up: pause (running) | open settings (idle)
+        // Swipe up: pause (running)
         case OsEventTypeList.SCROLL_TOP_EVENT: {
           if (state.status === 'running') {
             state.status     = 'paused'
             state.pauseStart = Date.now()
-          } else if (state.status === 'idle') {
-            openSettings(b)
           }
           await flushHUD()
           break
@@ -509,6 +493,7 @@ async function main(): Promise<void> {
     })
 
     setStatus('<span style="color:#4a4">Running tracker ready.</span>')
+    renderSettings(b)
     await flushHUD()
 
   } catch (err: unknown) {
