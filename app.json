@@ -1,0 +1,7 @@
+{
+  "name": "running-tracker",
+  "displayName": "Running Tracker",
+  "version": "2.0.0",
+  "description": "GPS + accelerometer running pace tracker for Even G2",
+  "permissions": ["imu", "gps", "storage"]
+}

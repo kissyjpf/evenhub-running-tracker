@@ -1,696 +1,414 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFolder } from 'obsidian';
-import { md5 } from './md5';
+import {
+  waitForEvenAppBridge,
+  TextContainerProperty,
+  OsEventTypeList,
+  ImuReportPace,
+  TextContainerUpgrade,
+  CreateStartUpPageContainer,
+  StartUpPageCreateResult,
+} from '@evenrealities/even_hub_sdk'
 
-declare const BUILD_TIME: string;
+import { makeInitialState, activeElapsedMs, lapElapsedMs, lapDistanceM, recordLap } from './state'
+import type { AppState } from './state'
+import { SensorManager } from './sensors/manager'
+import { haversineM } from './sensors/gps'
+import type { GpsFix } from './sensors/gps'
+import { PaceEstimator } from './pace'
+import { loadRecords, saveRecords, insertRecord } from './calibration/records'
+import { harvestCalibRecord } from './calibration/harvest'
+import type { RunSample } from './calibration/harvest'
+import { renderHUD, HUDCells, CELL_KEYS } from './hud'
+import { renderSettingsUI } from './settings/ui'
+import { DEFAULT_SETTINGS } from './types'
 
-// --- Configuration ---
-const RTM_AUTH_URL = 'https://www.rememberthemilk.com/services/auth/';
-const RTM_REST_URL = 'https://api.rememberthemilk.com/services/rest/';
+// ── Canvas geometry ──────────────────────────────────────────────────────────
+const CANVAS_W  = 576
+const CANVAS_H  = 288
+const ROW_H     = 28
+const SIDE_W    = 130
+const CENTER_W  = CANVAS_W - SIDE_W * 2   // 316
+const TOP_Y     = 0
+const MID_Y     = ROW_H                   // 28
+const BOT_Y     = CANVAS_H - ROW_H        // 260
 
-interface RtmPluginSettings {
-	apiKey: string;
-	sharedSecret: string;
-	authToken: string;
-	defaultDueForNewTask: 'none' | 'today';
-	noteCreationFolder: string;
-	importWithNotesAndLink: boolean;
+// ── Module-level singletons ──────────────────────────────────────────────────
+const state   = makeInitialState()
+const sensors = new SensorManager()
+const pace    = new PaceEstimator()
+
+// Rolling GPS speed buffer for computing speed CoV (last 10 values)
+const gpsSpeedBuf: number[] = []
+let pendingDistM  = 0       // GPS distance accumulated between 1Hz ticks
+let lastGpsFix: GpsFix | null = null
+let totalStepEst  = 0       // cumulative step count estimate (from cadence × dt)
+
+// ── Bridge helpers ────────────────────────────────────────────────────────────
+type Bridge = Awaited<ReturnType<typeof waitForEvenAppBridge>>
+
+function makeContainer(
+  id: number,
+  name: keyof HUDCells,
+  x: number, y: number,
+  w: number, h: number,
+  content: string,
+  isEventCapture: 0 | 1,
+): TextContainerProperty {
+  return new TextContainerProperty({
+    containerID:   id,
+    containerName: name,
+    xPosition: x, yPosition: y,
+    width: w, height: h,
+    borderWidth: 0, borderColor: 0, borderRadius: 0, paddingLength: 0,
+    content,
+    isEventCapture,
+  })
 }
 
-const DEFAULT_SETTINGS: RtmPluginSettings = {
-	apiKey: '',
-	sharedSecret: '',
-	authToken: '',
-	defaultDueForNewTask: 'none',
-	noteCreationFolder: '',
-	importWithNotesAndLink: false
+let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', bl:'', bc:'', br:'' }
+let bridge: Bridge | null = null
+
+async function flushHUD(): Promise<void> {
+  if (!bridge) return
+  const h = buildHudInput()
+  const cells = renderHUD(h)
+  for (let i = 0; i < CELL_KEYS.length; i++) {
+    const key = CELL_KEYS[i]!
+    if (cells[key] === cachedCells[key]) continue
+    cachedCells[key] = cells[key]
+    await bridge.textContainerUpgrade(new TextContainerUpgrade({
+      containerID:   i + 1,
+      containerName: key,
+      contentOffset: 0,
+      contentLength: 0,
+      content: cells[key],
+    })).catch(console.error)
+  }
 }
 
-// RTM API レスポンス型
-interface RtmResponse {
-	rsp: {
-		stat: string;
-		err?: { msg: string };
-		lists?: { list: RtmList | RtmList[] };
-		tasks?: { list: RtmTaskList | RtmTaskList[] };
-		timeline?: string;
-		frob?: string;
-		auth?: { token: string };
-	};
+function buildHudInput() {
+  const lp = state.lastPace
+  return {
+    status:              state.status,
+    elapsedMs:           activeElapsedMs(state),
+    totalDistanceM:      state.totalDistanceM,
+    lapNumber:           state.laps.length + 1,
+    lapDistanceM:        lapDistanceM(state),
+    lapElapsedMs:        lapElapsedMs(state),
+    paceSPerKm:          lp?.paceSPerKm ?? null,
+    cadenceSpm:          lp?.cadenceSpm ?? null,
+    segmentPaceSPerKm:   state.segmentPaceSPerKm,
+    kValue:              pace.k.value,
+    calibRecordCount:    state.calibRecords.length,
+  }
 }
 
-interface RtmList {
-	id: string;
-	name: string;
+// ── Speed CoV from buffer ────────────────────────────────────────────────────
+function speedCov(): number {
+  if (gpsSpeedBuf.length < 3) return 999
+  const mean = gpsSpeedBuf.reduce((a, b) => a + b, 0) / gpsSpeedBuf.length
+  if (mean < 0.1) return 999
+  const variance = gpsSpeedBuf.reduce((s, v) => s + (v - mean) ** 2, 0) / gpsSpeedBuf.length
+  return Math.sqrt(variance) / mean
 }
 
-interface RtmTaskList {
-	id: string;
-	taskseries?: RtmTaskSeries | RtmTaskSeries[];
+// ── 1 Hz tick ────────────────────────────────────────────────────────────────
+function tick(): void {
+  const now = Date.now()
+
+  // Consume accumulated GPS distance
+  if (state.status === 'running') {
+    state.totalDistanceM += pendingDistM
+  }
+  pendingDistM = 0
+
+  // Estimate cadence step count
+  const cadNow = sensors.lastCadenceSpm
+  if (state.status === 'running' && cadNow !== null) {
+    totalStepEst += cadNow / 60   // 1s tick → cadence/60 steps
+  }
+
+  // Update pace estimator
+  const gpsFix = sensors.gps.getFix()
+  const result = pace.update({
+    gpsSpeedMs:   sensors.gps.lastSpeedMs,
+    gpsAccuracyM: sensors.gps.lastAccuracyM,
+    cadenceSpm:   cadNow,
+    verticalAmp:  sensors.lastVertAmp,
+    speedCov:     speedCov(),
+    records:      state.calibRecords,
+    settings:     state.settings,
+  })
+  state.lastPace = result
+
+  // Collect run sample
+  if (state.status === 'running') {
+    const sample: RunSample = {
+      ts:           now,
+      distM:        state.totalDistanceM,
+      speedMs:      result.speedMs,
+      gpsAccuracyM: sensors.gps.lastAccuracyM,
+      steps:        Math.round(totalStepEst),
+      cadenceSpm:   cadNow,
+      verticalAmp:  sensors.lastVertAmp,
+    }
+    state.runSamples.push(sample)
+  }
+
+  // Segment pace: direct from lap accumulated distance / elapsed time
+  const segMs = lapElapsedMs(state)
+  const segDm = lapDistanceM(state)
+  if (state.status === 'running' && segDm > 20 && segMs > 5000) {
+    state.segmentPaceSPerKm = (segMs / 1000) / (segDm / 1000)
+  }
+
+  flushHUD().catch(console.error)
 }
 
-interface RtmTaskSeries {
-	id: string;
-	name: string;
-	list_id?: string;
-	task: RtmTask | RtmTask[];
-	tags?: { tag: string | string[] };
-	notes?: { note: RtmNote | RtmNote[] };
+// ── Persistence helpers ───────────────────────────────────────────────────────
+async function persistAll(b: Bridge): Promise<void> {
+  await saveRecords(async (k, v) => { await b.setLocalStorage(k, v) }, state.calibRecords).catch(console.error)
+  await b.setLocalStorage('k_scalar', String(pace.k.serialize())).catch(console.error)
+  await b.setLocalStorage('settings_v1', JSON.stringify(state.settings)).catch(console.error)
 }
 
-interface RtmTask {
-	id: string;
-	due: string;
-	start: string;
-	priority: string;
-	completed: string;
+async function loadAll(b: Bridge): Promise<void> {
+  state.calibRecords = await loadRecords(k => b.getLocalStorage(k).catch(() => null))
+
+  const kRaw = await b.getLocalStorage('k_scalar').catch(() => null)
+  if (kRaw) {
+    const kv = parseFloat(kRaw)
+    if (isFinite(kv)) pace.k.deserialize(kv)
+  }
+
+  const settingsRaw = await b.getLocalStorage('settings_v1').catch(() => null)
+  if (settingsRaw) {
+    try {
+      const parsed = JSON.parse(settingsRaw) as Partial<typeof DEFAULT_SETTINGS>
+      state.settings = { ...DEFAULT_SETTINGS, ...parsed }
+    } catch { /* use defaults */ }
+  }
 }
 
-interface RtmNote {
-	$t?: string;
+// ── Run lifecycle ─────────────────────────────────────────────────────────────
+function startRun(): void {
+  state.status             = 'running'
+  state.startTime          = Date.now()
+  state.pausedElapsed      = 0
+  state.pauseStart         = null
+  state.totalDistanceM     = 0
+  state.lapStartDistanceM  = 0
+  state.lapStartElapsedMs  = 0
+  state.laps               = []
+  state.lastPace           = null
+  state.segmentPaceSPerKm  = null
+  state.runSamples         = []
+  pendingDistM             = 0
+  totalStepEst             = 0
+  pace.resetEma()
 }
 
-// 内部で扱うタスク情報の構造
-interface FormattedTask {
-	name: string;
-	due: string;
-	start: string;
-	priority: string;
-	listName: string;
-	tags: string[];
-	notes: string[];
-	rtmId: { list: string; series: string; task: string };
-	rawPriority: string; 
-	rawDue: string;      
+async function stopRun(b: Bridge): Promise<void> {
+  state.status = 'idle'
+
+  // Auto-harvest calibration record from this run
+  if (state.runSamples.length >= 30) {
+    const rec = harvestCalibRecord(state.runSamples, state.settings, 'gps')
+    if (rec !== null) {
+      state.calibRecords = insertRecord(state.calibRecords, rec)
+      console.log('[harvest] new record:', rec.cadence_spm.toFixed(0), 'spm',
+        rec.step_length_m.toFixed(3), 'm/step')
+    }
+  }
+
+  await persistAll(b)
+  state.runSamples = []
 }
 
-export default class RtmPlugin extends Plugin {
-	settings: RtmPluginSettings;
-	timeline: string | null = null; 
+// ── Settings WebView ──────────────────────────────────────────────────────────
+let settingsOpen = false
 
-	async onload() {
-		await this.loadSettings();
-		this.addSettingTab(new RtmSettingTab(this.app, this));
+function openSettings(b: Bridge): void {
+  if (settingsOpen) return
+  settingsOpen = true
+  const overlay = document.createElement('div')
+  overlay.style.cssText = 'position:fixed;inset:0;background:#111;overflow:auto;z-index:10'
+  document.body.appendChild(overlay)
 
-		// 1. Download (Editor Insert) - All Incomplete
-		this.addCommand({
-			id: 'import-rtm-tasks',
-			name: 'Download all incomplete tasks',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				if (!this.checkAuth()) return;
-				await this.fetchAndProcessTasks('status:incomplete', false, (tasks) => {
-					this.insertTasksToEditor(editor, tasks);
-				});
-			}
-		});
-
-		// 2. Download (Editor Insert) - Select
-		this.addCommand({
-			id: 'select-rtm-tasks',
-			name: 'Select and import tasks',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				if (!this.checkAuth()) return;
-				await this.fetchAndProcessTasks('status:incomplete', true, (tasks) => {
-					this.insertTasksToEditor(editor, tasks);
-				});
-			}
-		});
-
-		// 3. Download (Editor Insert) - Custom Filter
-		this.addCommand({
-			id: 'import-rtm-tasks-custom',
-			name: 'Download tasks (Custom Filter)',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				if (!this.checkAuth()) return;
-				new FilterModal(this.app, (result) => {
-					void this.fetchAndProcessTasks(result, true, (tasks) => {
-						this.insertTasksToEditor(editor, tasks);
-					});
-				}).open();
-			}
-		});
-
-		// 4. Create Note from Task
-		this.addCommand({
-			id: 'create-note-from-rtm-task',
-			name: 'Create note from RTM task',
-			callback: async () => {
-				if (!this.checkAuth()) return;
-				await this.fetchAndProcessTasks('status:incomplete', true, (tasks) => {
-					void this.createNotesFromTasks(tasks);
-				});
-			}
-		});
-
-		// 5. Add Task (viewを渡す)
-		this.addCommand({
-			id: 'add-rtm-task',
-			name: 'Add cursor line to RTM',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				if (!this.checkAuth()) return;
-				await this.addTaskFromEditor(editor, view);
-			}
-		});
-
-		// 6. Complete Task
-		this.addCommand({
-			id: 'complete-rtm-task',
-			name: 'Complete task at cursor',
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				if (!this.checkAuth()) return;
-				await this.completeTaskInEditor(editor);
-			}
-		});
-	}
-
-	checkAuth(): boolean {
-		if (!this.settings.apiKey || !this.settings.sharedSecret) {
-			new Notice('Please set your API Key and Secret in settings.');
-			return false;
-		}
-		if (!this.settings.authToken) {
-			new Notice('Please authenticate with RTM from settings.');
-			return false;
-		}
-		return true;
-	}
-
-	// Helper: リスト名取得
-	async fetchListsMap(): Promise<Record<string, string>> {
-		const map: Record<string, string> = {};
-		try {
-			const res = await this.callRtmApi('rtm.lists.getList');
-			if (res.rsp.lists?.list) {
-				const lists: RtmList[] = Array.isArray(res.rsp.lists.list) ? res.rsp.lists.list : [res.rsp.lists.list];
-				for (const l of lists) {
-					if (l?.id && l?.name) map[l.id] = l.name;
-				}
-			}
-		} catch (e) { console.error("List fetch error:", e); }
-		return map;
-	}
-
-	// Core Logic
-	async fetchAndProcessTasks(filterStr: string, showSelectionUI: boolean, onSelected: (tasks: FormattedTask[]) => void) {
-		new Notice(`Fetching tasks...`);
-		try {
-			const listMap = await this.fetchListsMap();
-			const response = await this.callRtmApi('rtm.tasks.getList', { filter: filterStr, notes: '1' });
-
-			if (!response.rsp.tasks?.list) {
-				new Notice('No tasks found.');
-				return;
-			}
-
-			const parsedTasks: FormattedTask[] = [];
-			const lists: RtmTaskList[] = Array.isArray(response.rsp.tasks.list) ? response.rsp.tasks.list : [response.rsp.tasks.list];
-
-			for (const list of lists) {
-				if (!list.taskseries) continue;
-				const seriesArray: RtmTaskSeries[] = Array.isArray(list.taskseries) ? list.taskseries : [list.taskseries];
-
-				for (const s of seriesArray) {
-					const name = s.name;
-					const task: RtmTask = Array.isArray(s.task) ? s.task[0] as RtmTask : s.task;
-
-					let realListId = list.id;
-					if (!realListId && s.list_id) realListId = s.list_id;
-					if (!realListId) realListId = "MISSING";
-
-					let dueDisplay = "";
-					if (task.due && task.due !== "") {
-						dueDisplay = `📅 ${task.due.split('T')[0]}`;
-					}
-
-					let startDisplay = "";
-					if (task.start && task.start !== "") {
-						startDisplay = `🛫 ${task.start.split('T')[0]}`;
-					}
-
-					let priDisplay = "";
-					switch (task.priority) {
-						case '1': priDisplay = "🔺"; break;
-						case '2': priDisplay = "🔼"; break;
-						case '3': priDisplay = "🔽"; break;
-					}
-
-					const listNameDisplay = listMap[realListId] ?? "";
-
-					const tagArray: string[] = [];
-					if (s.tags?.tag) {
-						const rawTags: string[] = Array.isArray(s.tags.tag) ? s.tags.tag : [s.tags.tag];
-						rawTags.forEach(t => tagArray.push(t));
-					}
-
-					const noteArray: string[] = [];
-					if (s.notes?.note) {
-						const rawNotes: RtmNote[] = Array.isArray(s.notes.note) ? s.notes.note : [s.notes.note];
-						rawNotes.forEach((n: RtmNote) => {
-							const text = n.$t ?? String(n);
-							if (text) noteArray.push(text);
-						});
-					}
-
-					parsedTasks.push({
-						name,
-						due: dueDisplay,
-						start: startDisplay,
-						priority: priDisplay,
-						listName: listNameDisplay,
-						tags: tagArray,
-						notes: noteArray,
-						rtmId: { list: realListId, series: s.id, task: task.id },
-						rawPriority: task.priority,
-						rawDue: task.due
-					});
-				}
-			}
-
-			if (showSelectionUI) {
-				new TaskImportModal(this.app, parsedTasks, (selectedTasks) => {
-					onSelected(selectedTasks);
-				}).open();
-			} else {
-				onSelected(parsedTasks);
-			}
-
-		} catch (e) { console.error(e); new Notice('Fetch error.'); }
-	}
-
-	insertTasksToEditor(editor: Editor, tasks: FormattedTask[]) {
-		if (tasks.length === 0) { new Notice("No tasks selected."); return; }
-
-		let textToInsert = "";
-		for (const t of tasks) {
-			let listTag = "";
-			if (t.listName) {
-				const safeName = t.listName.replace(/[\s,.]+/g, '_');
-				listTag = ` #${safeName}`;
-			}
-			const tagsStr = t.tags.map(tag => ` #${tag}`).join("");
-			const idTag = `[🐮](rtm:${t.rtmId.list}:${t.rtmId.series}:${t.rtmId.task})`;
-			const priStr = t.priority ? ` ${t.priority}` : "";
-			const dueStr = t.due ? ` ${t.due}` : "";
-			textToInsert += `- [ ] ${idTag} ${t.name}${priStr}${dueStr}${listTag}${tagsStr}\n`;
-
-			if (this.settings.importWithNotesAndLink) {
-				const webLink = `https://www.rememberthemilk.com/app/#all/${t.rtmId.task}`;
-				textToInsert += `    - RTM Link: ${webLink}\n`;
-				if (t.notes && t.notes.length > 0) {
-					t.notes.forEach(note => {
-						const lines = note.split('\n');
-						lines.forEach(line => {
-							if (line.trim() !== '') {
-								textToInsert += `    - Note: ${line}\n`;
-							}
-						});
-					});
-				}
-			}
-		}
-		editor.replaceSelection(textToInsert);
-		new Notice(`${tasks.length} tasks inserted.`);
-	}
-
-	async createNotesFromTasks(tasks: FormattedTask[]) {
-		if (tasks.length === 0) { new Notice("No tasks selected."); return; }
-		let createdCount = 0;
-		for (const t of tasks) {
-			const safeTitle = t.name.replace(/[\\/:*?"<>|]/g, '-');
-			
-			let folderPath = this.settings.noteCreationFolder.trim();
-			if (folderPath.endsWith('/')) { folderPath = folderPath.slice(0, -1); }
-			if (folderPath.startsWith('/')) { folderPath = folderPath.slice(1); }
-			
-			if (folderPath) {
-				await this.ensureFolderExists(folderPath);
-			}
-
-			let filePath = folderPath ? `${folderPath}/${safeTitle}.md` : `${safeTitle}.md`;
-			if (this.app.vault.getAbstractFileByPath(filePath)) {
-				filePath = folderPath ? `${folderPath}/${safeTitle}-${Date.now()}.md` : `${safeTitle}-${Date.now()}.md`;
-			}
-			const tagsStr = t.tags.map(tag => `#${tag}`).join(" ");
-			const listStr = t.listName ? `#${t.listName.replace(/[\s,.]+/g, '_')}` : "";
-			
-			let content = `# ${t.name}\n\n`;
-			content += `- **RTM Link**: [🐮 Open Task](rtm:${t.rtmId.list}:${t.rtmId.series}:${t.rtmId.task})\n`;
-			if (t.due) content += `- **Due**: ${t.due}\n`;
-			if (t.start) content += `- **Start**: ${t.start}\n`;
-			if (t.priority) content += `- **Priority**: ${t.priority}\n`;
-			if (listStr || tagsStr) content += `- **Tags**: ${listStr} ${tagsStr}\n`;
-			content += `\n---\n\n`;
-			if (t.notes.length > 0) {
-				content += `## Notes\n\n`;
-				t.notes.forEach(note => { content += `${note}\n\n`; });
-			} else { content += `(No notes in RTM)\n`; }
-
-			try {
-				await this.app.vault.create(filePath, content);
-				createdCount++;
-			} catch (e) {
-				console.error(`Failed to create file: ${filePath}`, e);
-				new Notice(`Failed to create note for "${t.name}"`);
-			}
-		}
-		new Notice(`${createdCount} notes created.`);
-	}
-
-	// 5. Add Task
-	async addTaskFromEditor(editor: Editor, view: MarkdownView) {
-		const cursor = editor.getCursor();
-		const lineText = editor.getLine(cursor.line);
-		const taskName = lineText.replace(/^[-*] \[[ x]\] /, '').replace(/^[-*] /, '').trim();
-		
-		if (!taskName) { new Notice('Task name is empty.'); return; }
-		new Notice(`Adding: ${taskName}`);
-
-		// 現在のノート名を取得
-		const sourceNote = view.file ? view.file.basename : "";
-
-		try {
-			const timeline = await this.getTimeline();
-			const res = await this.callRtmApi('rtm.tasks.add', { timeline: timeline, name: taskName, parse: '1' });
-
-			const rawList = res.rsp.tasks?.list;
-			const list: RtmTaskList = (Array.isArray(rawList) ? rawList[0] : rawList) as RtmTaskList;
-			const listId = list.id;
-			const seriesRaw = list.taskseries;
-			const series: RtmTaskSeries = (Array.isArray(seriesRaw) ? seriesRaw[0] : seriesRaw) as RtmTaskSeries;
-			const taskSeriesId = series.id;
-			const taskObj: RtmTask = (Array.isArray(series.task) ? series.task[0] : series.task) as RtmTask;
-			const taskId = taskObj.id;
-
-			// 現在の設定に従ってデフォルト期日を設定
-			if (this.settings.defaultDueForNewTask === 'today') {
-				try {
-					await this.callRtmApi('rtm.tasks.setDueDate', {
-						timeline: timeline,
-						list_id: listId,
-						taskseries_id: taskSeriesId,
-						task_id: taskId,
-						due: 'today',
-						parse: '1'
-					});
-				} catch (err) {
-					console.error("Failed to set due date", err);
-				}
-			}
-
-			// RTMのノート（Note）としてObsidianのノート名を追加
-			if (sourceNote) {
-				try {
-					await this.callRtmApi('rtm.tasks.notes.add', {
-						timeline: timeline,
-						list_id: listId,
-						taskseries_id: taskSeriesId,
-						task_id: taskId,
-						note_title: "Obsidian Link",
-						note_text: `From Obsidian Note: [[${sourceNote}]]`
-					});
-				} catch (noteErr) {
-					console.error("Failed to add note to RTM task", noteErr);
-				}
-			}
-
-			const idTag = `[🐮](rtm:${listId}:${taskSeriesId}:${taskId})`;
-			const newLine = `- [ ] ${idTag} ${taskName}`;
-			editor.setLine(cursor.line, newLine);
-			new Notice('Added to RTM!');
-		} catch (e) { console.error("Add Task Error:", e); new Notice('Add error.'); }
-	}
-
-	// 6. Complete Task
-	async completeTaskInEditor(editor: Editor) {
-		const cursor = editor.getCursor();
-		const lineText = editor.getLine(cursor.line);
-		const regex = /\(rtm:([\w\d]+):([\w\d]+):([\w\d]+)\)/;
-		const match = lineText.match(regex);
-
-		if (!match) { new Notice(`Error: No RTM Link found.`); return; }
-
-		const listId = match[1] as string;
-		const seriesId = match[2] as string;
-		const taskId = match[3] as string;
-
-		if (!listId || listId === 'MISSING') { new Notice('Error: List ID invalid.'); return; }
-
-		new Notice('Completing task...');
-		try {
-			const timeline = await this.getTimeline();
-			await this.callRtmApi('rtm.tasks.complete', {
-				timeline: timeline,
-				list_id: listId,
-				taskseries_id: seriesId,
-				task_id: taskId
-			});
-			const completedLine = lineText.replace('- [ ]', '- [x]');
-			editor.setLine(cursor.line, completedLine);
-			new Notice('Task completed!');
-		} catch (e) { console.error("Completion Error:", e); new Notice('Completion error.'); }
-	}
-
-	async getTimeline(): Promise<string> {
-		if (this.timeline) return this.timeline;
-		const res = await this.callRtmApi('rtm.timelines.create');
-		const tl = res.rsp.timeline ?? '';
-		this.timeline = tl;
-		return tl;
-	}
-
-	async callRtmApi(method: string, params: Record<string, string> = {}): Promise<RtmResponse> {
-		const apiKey = this.settings.apiKey;
-		const sharedSecret = this.settings.sharedSecret;
-		if(!apiKey || !sharedSecret) throw new Error("API Key/Secret missing");
-
-		const apiParams: Record<string, string> = { ...params, method, api_key: apiKey, format: 'json', auth_token: this.settings.authToken };
-		const keys = Object.keys(apiParams).sort();
-		let sigString = sharedSecret;
-		for (const key of keys) sigString += key + apiParams[key];
-		apiParams['api_sig'] = md5(sigString);
-
-		const url = `${RTM_REST_URL}?${new URLSearchParams(apiParams).toString()}`;
-		const res = await requestUrl({ url: url });
-		const json = res.json as RtmResponse;
-		if(json.rsp.stat !== 'ok') {
-			console.error('API Error:', json);
-			throw new Error(`API Error: ${json.rsp.err?.msg}`);
-		}
-		return json;
-	}
-
-	async ensureFolderExists(folderPath: string) {
-		if (!folderPath) return;
-		const parts = folderPath.split('/');
-		let currentPath = '';
-		for (const part of parts) {
-			if (!part) continue;
-			currentPath = currentPath === '' ? part : `${currentPath}/${part}`;
-			if (!this.app.vault.getAbstractFileByPath(currentPath)) {
-				try {
-					await this.app.vault.adapter.mkdir(currentPath);
-				} catch (e) {
-					console.error(`Failed to create folder: ${currentPath}`, e);
-				}
-			}
-		}
-	}
-
-	async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<RtmPluginSettings>); }
-	async saveSettings() { await this.saveData(this.settings); }
+  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, {
+    onSettingsChange(s) {
+      state.settings = s
+      persistAll(b).catch(console.error)
+      draw()
+    },
+    onRecordsChange(r) {
+      state.calibRecords = r
+      persistAll(b).catch(console.error)
+      draw()
+    },
+    onClose() {
+      document.body.removeChild(overlay)
+      settingsOpen = false
+      flushHUD().catch(console.error)
+    },
+  })
+  draw()
 }
 
-// --- Import Selection Modal ---
-class TaskImportModal extends Modal {
-	tasks: FormattedTask[];
-	selected: boolean[];
-	onSubmit: (selected: FormattedTask[]) => void;
+// ── Entry point ───────────────────────────────────────────────────────────────
+async function main(): Promise<void> {
+  document.body.style.cssText = 'background:#1a1a1a;color:#ccc;font-family:monospace;padding:8px'
+  document.body.innerHTML = '<p>Initializing…</p>'
 
-	constructor(app: App, tasks: FormattedTask[], onSubmit: (selected: FormattedTask[]) => void) {
-		super(app);
-		this.tasks = tasks;
-		// デフォルトは選択なし
-		this.selected = new Array<boolean>(tasks.length).fill(false);
-		this.onSubmit = onSubmit;
-	}
+  try {
+    const b = await waitForEvenAppBridge()
+    bridge = b
 
-	onOpen() {
-		const { contentEl } = this;
-		new Setting(contentEl).setName(`Select Tasks (${this.tasks.length})`).setHeading();
+    await loadAll(b)
 
-		const listContainer = contentEl.createDiv({ cls: "rtm-task-list" });
+    // GPS: accumulate distance between ticks
+    sensors.onGps(fix => {
+      const spd = fix.speedMs
+      if (spd !== null && spd >= 0) {
+        gpsSpeedBuf.push(spd)
+        if (gpsSpeedBuf.length > 10) gpsSpeedBuf.shift()
+      }
+      if (state.status === 'running' && lastGpsFix !== null) {
+        pendingDistM += haversineM(lastGpsFix, fix)
+      }
+      lastGpsFix = fix
+    })
+    sensors.initGps()
 
-		this.tasks.forEach((task, index) => {
-			const itemDiv = listContainer.createDiv({ cls: "rtm-task-item" });
+    // Build initial HUD
+    const initial = renderHUD(buildHudInput())
+    cachedCells = { ...initial }
 
-			const checkbox = itemDiv.createEl("input", { type: "checkbox" });
-			checkbox.checked = this.selected[index] ?? false;
-			checkbox.onchange = (e) => {
-				this.selected[index] = (e.target as HTMLInputElement).checked;
-			};
+    const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
+      containerTotalNum: 7,
+      textObject: [
+        makeContainer(1, 'tl', 0,                 TOP_Y, SIDE_W,   ROW_H, initial.tl, 1),
+        makeContainer(2, 'tc', SIDE_W,             TOP_Y, CENTER_W, ROW_H, initial.tc, 0),
+        makeContainer(3, 'tr', CANVAS_W - SIDE_W, TOP_Y, SIDE_W,   ROW_H, initial.tr, 0),
+        makeContainer(4, 'ca', 0,                 MID_Y, CANVAS_W, ROW_H, initial.ca, 0),
+        makeContainer(5, 'bl', 0,                 BOT_Y, SIDE_W,   ROW_H, initial.bl, 0),
+        makeContainer(6, 'bc', SIDE_W,             BOT_Y, CENTER_W, ROW_H, initial.bc, 0),
+        makeContainer(7, 'br', CANVAS_W - SIDE_W, BOT_Y, SIDE_W,   ROW_H, initial.br, 0),
+      ],
+    }))
 
-			const label = itemDiv.createSpan({ cls: "rtm-task-label" });
-			label.createEl("b", { text: task.name });
-			if (task.listName) label.createEl("small", { text: ` [${task.listName}]`, cls: "rtm-task-list-name" });
-			if (task.due) label.createEl("small", { text: ` ${task.due}`, cls: "rtm-task-due" });
-			if (task.notes && task.notes.length > 0) label.createEl("small", { text: " 📝" });
-		});
+    if (result !== StartUpPageCreateResult.success) {
+      console.error('HUD init failed:', result)
+    }
 
-		const btnDiv = contentEl.createDiv({ cls: "rtm-btn-row" });
+    // Try DeviceMotion; fall back to G2 IMU path
+    const dmGranted = await sensors.tryDeviceMotion()
+    if (!dmGranted) {
+      sensors.startG2Imu()
+    }
 
-		const toggleBtn = btnDiv.createEl("button", { text: "Select All" });
-		toggleBtn.onclick = () => {
-			const allSelected = this.selected.every(Boolean);
-			this.selected.fill(!allSelected);
-			const checkboxes = listContainer.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-			checkboxes.forEach(cb => cb.checked = !allSelected);
-			// ★修正: .text ではなく .textContent を使用
-			toggleBtn.textContent = allSelected ? "Select All" : "Deselect All";
-		};
+    // Start G2 IMU via SDK
+    try {
+      await b.imuControl(true, ImuReportPace.P200)
+    } catch (e) {
+      console.warn('[IMU] control failed (simulator mode):', e)
+    }
 
-		const importBtn = btnDiv.createEl("button", { text: "Process Selected" });
-		importBtn.className = "mod-cta";
-		importBtn.onclick = () => {
-			const tasksToImport = this.tasks.filter((_, i) => this.selected[i]);
-			this.onSubmit(tasksToImport);
-			this.close();
-		};
-	}
+    // 1 Hz tick
+    setInterval(tick, 1000)
 
-	onClose() { this.contentEl.empty(); }
+    // Recalibration warning check
+    setInterval(() => {
+      if (pace.k.recalibNeeded) {
+        console.warn('[k-scalar] at boundary for >2 min — recommend new calibration run')
+      }
+    }, 30_000)
+
+    // Gesture + IMU event handler
+    const unsub = b.onEvenHubEvent(async event => {
+      const sys = event.sysEvent
+      if (sys?.imuData && sys.eventType === OsEventTypeList.IMU_DATA_REPORT) {
+        sensors.feedImu({ x: sys.imuData.x ?? 0, y: sys.imuData.y ?? 0, z: sys.imuData.z ?? 0 })
+        return
+      }
+
+      const type = event.sysEvent?.eventType
+        ?? event.textEvent?.eventType
+        ?? event.listEvent?.eventType
+        ?? OsEventTypeList.CLICK_EVENT
+
+      switch (type) {
+
+        // Single tap: lap (running) | resume (paused)
+        case OsEventTypeList.CLICK_EVENT: {
+          if (state.status === 'running') {
+            recordLap(state)
+          } else if (state.status === 'paused') {
+            if (state.pauseStart !== null) {
+              state.pausedElapsed += Date.now() - state.pauseStart
+              state.pauseStart = null
+            }
+            state.status = 'running'
+          }
+          await flushHUD()
+          break
+        }
+
+        // Double tap: start (idle) | stop+save (running/paused)
+        case OsEventTypeList.DOUBLE_CLICK_EVENT: {
+          if (state.status === 'idle') {
+            // First run: request DeviceMotion permission from user gesture
+            if (sensors.path === 'g2imu') {
+              const granted = await sensors.tryDeviceMotion()
+              if (granted) console.log('[sensors] upgraded to DeviceMotion')
+            }
+            startRun()
+          } else {
+            await stopRun(b)
+          }
+          await flushHUD()
+          break
+        }
+
+        // Swipe up: pause (running) | open settings (idle)
+        case OsEventTypeList.SCROLL_TOP_EVENT: {
+          if (state.status === 'running') {
+            state.status     = 'paused'
+            state.pauseStart = Date.now()
+          } else if (state.status === 'idle') {
+            openSettings(b)
+          }
+          await flushHUD()
+          break
+        }
+
+        // Swipe down: resume if paused
+        case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
+          if (state.status === 'paused') {
+            if (state.pauseStart !== null) {
+              state.pausedElapsed += Date.now() - state.pauseStart
+              state.pauseStart = null
+            }
+            state.status = 'running'
+            await flushHUD()
+          }
+          break
+        }
+      }
+    })
+
+    window.addEventListener('beforeunload', () => {
+      b.imuControl(false)
+      sensors.stop()
+      unsub()
+    })
+
+    document.body.innerHTML = '<p style="color:#4a4">Running tracker ready.</p>'
+    await flushHUD()
+
+  } catch (err: unknown) {
+    document.body.innerHTML += `<p style="color:#f44">Fatal: ${String(err)}</p>`
+    console.error(err)
+  }
 }
 
-// --- Filter Modal ---
-class FilterModal extends Modal {
-	onSubmit: (result: string) => void;
-	constructor(app: App, onSubmit: (result: string) => void) {
-		super(app);
-		this.onSubmit = onSubmit;
-	}
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.createEl("h3", { text: "Filter RTM Tasks" });
-		new Setting(contentEl)
-			.setName("Search Query")
-			.setDesc("e.g. list:Inbox, due:today")
-			.addText((text) =>
-				text.setValue("status:incomplete").onChange((value) => {}).inputEl.addEventListener("keydown", (e) => {
-					if (e.key === "Enter") { this.onSubmit(text.getValue()); this.close(); }
-				})
-			);
-		new Setting(contentEl).addButton((btn) => btn.setButtonText("Search").setCta().onClick(() => {
-			// @ts-ignore
-			const input = contentEl.querySelector('input'); 
-			if(input) { this.onSubmit(input.value); this.close(); }
-		}));
-	}
-	onClose() { this.contentEl.empty(); }
-}
-
-class RtmSettingTab extends PluginSettingTab {
-	plugin: RtmPlugin;
-	constructor(app: App, plugin: RtmPlugin) { super(app, plugin); this.plugin = plugin; }
-	display(): void {
-		const {containerEl} = this; containerEl.empty();
-		new Setting(containerEl).setName('Connection').setHeading();
-
-		const buildTime = typeof BUILD_TIME !== 'undefined' ? BUILD_TIME : "Unknown";
-		containerEl.createEl('p', {
-			text: `Version: ${this.plugin.manifest.version} (Build: ${buildTime})`,
-			cls: 'setting-item-description rtm-version-info'
-		});
-
-		new Setting(containerEl).setName('API Key').addText(text => text.setValue(this.plugin.settings.apiKey).onChange(async (v) => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
-		new Setting(containerEl).setName('Shared Secret').addText(text => text.setValue(this.plugin.settings.sharedSecret).onChange(async (v) => { this.plugin.settings.sharedSecret = v; await this.plugin.saveSettings(); }));
-		const authSetting = new Setting(containerEl).setName('Auth');
-		if (this.plugin.settings.authToken) {
-			authSetting.setDesc('✅ Authorized');
-		}
-		authSetting.addButton(b => b.setButtonText('Start Auth').onClick(async () => await this.startAuthProcess()));
-
-		new Setting(containerEl)
-			.setName('Default Due Date')
-			.setDesc('Setting for new tasks created from editor')
-			.addDropdown(drop => drop
-				.addOption('none', 'No Due Date')
-				.addOption('today', 'Today')
-				.setValue(this.plugin.settings.defaultDueForNewTask)
-				.onChange(async (v: 'none' | 'today') => {
-					this.plugin.settings.defaultDueForNewTask = v;
-					await this.plugin.saveSettings();
-				})
-			);
-
-		new Setting(containerEl)
-			.setName('Note Creation Folder')
-			.setDesc('Folder to create notes from RTM tasks.')
-			.addDropdown(drop => {
-				drop.addOption('', '/ (Vault Root)');
-				const folders = this.app.vault.getAllLoadedFiles().filter(f => f instanceof TFolder) as TFolder[];
-				folders.forEach(f => {
-					if (f.path !== '/') {
-						drop.addOption(f.path, f.path);
-					}
-				});
-				drop.setValue(this.plugin.settings.noteCreationFolder);
-				drop.onChange(async (v) => {
-					this.plugin.settings.noteCreationFolder = v;
-					await this.plugin.saveSettings();
-				});
-			});
-
-		new Setting(containerEl)
-			.setName('Import with Notes and RTM Link')
-			.setDesc('When inserting tasks to the editor, also include RTM task notes and links as sub-items.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.importWithNotesAndLink)
-				.onChange(async (v) => {
-					this.plugin.settings.importWithNotesAndLink = v;
-					await this.plugin.saveSettings();
-				})
-			);
-	}
-	async startAuthProcess() {
-		const rtm = this.plugin;
-		const apiKey = rtm.settings.apiKey;
-		const sharedSecret = rtm.settings.sharedSecret;
-		if (!apiKey || !sharedSecret) { new Notice('Enter keys first'); return; }
-		const frobParams: Record<string, string> = { method: 'rtm.auth.getFrob', api_key: apiKey, format: 'json' };
-		let sigString = sharedSecret;
-		Object.keys(frobParams).sort().forEach(k => sigString += k + frobParams[k]);
-		frobParams['api_sig'] = md5(sigString);
-		const frobRes = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(frobParams).toString()}` });
-		const frob = (frobRes.json as RtmResponse).rsp.frob ?? '';
-		const authParams: Record<string, string> = { api_key: apiKey, perms: 'delete', frob };
-		let authSigString = sharedSecret;
-		Object.keys(authParams).sort().forEach(k => authSigString += k + authParams[k]);
-		const apiSig = md5(authSigString);
-		window.open(`${RTM_AUTH_URL}?api_key=${apiKey}&perms=delete&frob=${frob}&api_sig=${apiSig}`);
-		new TokenModal(this.app, frob, rtm, () => { this.display(); }).open();
-	}
-}
-
-class TokenModal extends Modal {
-	frob: string; plugin: RtmPlugin; onSuccess: () => void;
-	constructor(app: App, frob: string, plugin: RtmPlugin, onSuccess: () => void) { super(app); this.frob = frob; this.plugin = plugin; this.onSuccess = onSuccess; }
-	onOpen() {
-		const {contentEl} = this;
-		new Setting(contentEl).addButton(btn => btn.setButtonText('Finish Auth').setCta().onClick(async () => {
-			const apiKey = this.plugin.settings.apiKey;
-			const sharedSecret = this.plugin.settings.sharedSecret;
-			const tokenParams: Record<string, string> = { method: 'rtm.auth.getToken', api_key: apiKey, format: 'json', frob: this.frob };
-			let sig = sharedSecret;
-			Object.keys(tokenParams).sort().forEach(k => sig += k + tokenParams[k]);
-			tokenParams['api_sig'] = md5(sig);
-			try {
-				const res = await requestUrl({ url: `${RTM_REST_URL}?${new URLSearchParams(tokenParams).toString()}` });
-				const json = res.json as RtmResponse;
-				if(json.rsp.auth) {
-					this.plugin.settings.authToken = json.rsp.auth.token;
-					await this.plugin.saveSettings();
-					new Notice('Success!'); this.onSuccess(); this.close();
-				} else { new Notice('Failed.'); }
-			} catch { new Notice('Error.'); }
-		}));
-	}
-	onClose() { this.contentEl.empty(); }
-}
+main().catch(console.error)
