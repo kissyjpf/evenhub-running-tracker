@@ -31,13 +31,14 @@ export interface HUDCells {
   tl: string  // elapsed time
   tc: string  // current pace — main focus
   tr: string  // total distance
-  ca: string  // cadence + segment pace (full width)
+  ca: string  // cadence + segment pace (full width, row 2)
+  mo: string  // modal confirmation (centre, empty when no modal)
   bl: string  // current lap: dist + elapsed
   bc: string  // status icon + lap number
   br: string  // debug: k + calib count
 }
 
-export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'bl', 'bc', 'br']
+export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'mo', 'bl', 'bc', 'br']
 
 function p2(n: number): string {
   return String(Math.floor(Math.abs(n))).padStart(2, '0')
@@ -70,6 +71,7 @@ function renderBaseCells(h: HudInput): HUDCells {
       tc: 'READY',
       tr: '0.00km',
       ca: calStr,
+      mo: '',
       bl: '',
       bc: '○ tap=start  dbl=exit',
       br: '',
@@ -92,6 +94,7 @@ function renderBaseCells(h: HudInput): HUDCells {
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
     ca: `${cadPart}  •  ${segPart}`,
+    mo: '',
     bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
     bc: `${icon} lap${h.lapNumber}`,
     br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,
@@ -101,14 +104,14 @@ function renderBaseCells(h: HudInput): HUDCells {
 export function renderHUD(h: HudInput): HUDCells {
   const cells = renderBaseCells(h)
 
-  // Modal: only replace the middle row (ca) — top and bottom rows keep live data
+  // Modal: write to the centre row (mo) only — ca/top/bottom keep live data
   const m = h.modal
   if (m.type === 'exit') {
     const opts = ['Exit', 'Cancel']
-    cells.ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+    cells.mo = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
   } else if (m.type === 'stop') {
     const opts = ['Save+exit', 'Discard', 'Continue']
-    cells.ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+    cells.mo = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
   }
 
   return cells

@@ -28,8 +28,9 @@ const ROW_H     = 28
 const SIDE_W    = 130
 const CENTER_W  = CANVAS_W - SIDE_W * 2   // 316
 const TOP_Y     = 0
-const MID_Y     = Math.round((CANVAS_H - ROW_H) / 2)  // 130 — vertical centre
-const BOT_Y     = CANVAS_H - ROW_H        // 260
+const MID_Y     = ROW_H                               // 28  — cadence/segment row
+const MODAL_Y   = Math.round((CANVAS_H - ROW_H) / 2) // 130 — modal confirmation (centre)
+const BOT_Y     = CANVAS_H - ROW_H                   // 260
 
 // ── Module-level singletons ──────────────────────────────────────────────────
 const state   = makeInitialState()
@@ -64,7 +65,7 @@ function makeContainer(
   })
 }
 
-let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', bl:'', bc:'', br:'' }
+let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', mo:'', bl:'', bc:'', br:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
 
@@ -242,7 +243,11 @@ async function stopRun(b: Bridge): Promise<void> {
       state.calibRecords = insertRecord(state.calibRecords, rec)
       console.log('[harvest] new record:', rec.cadence_spm.toFixed(0), 'spm',
         rec.step_length_m.toFixed(3), 'm/step')
+    } else {
+      console.log('[harvest] no record — gate rejected or no steady segment')
     }
+  } else {
+    console.log('[harvest] too few samples:', state.runSamples.length, '(need ≥30)')
   }
 
   await persistAll(b)
@@ -291,7 +296,7 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
       hudModal = { type: 'stop', sel: (m.sel + 2) % 3 }
     } else if (type === OsEventTypeList.CLICK_EVENT) {
       hudModal = { type: 'none' }
-      if (m.sel === 0) await stopRun(b)
+      if (m.sel === 0) { await stopRun(b); renderSettings(b) }
       else if (m.sel === 1) discardRun()
       // sel === 2: continue — no state change
     } else {
@@ -353,15 +358,16 @@ async function main(): Promise<void> {
     cachedCells = { ...initial }
 
     const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
-      containerTotalNum: 7,
+      containerTotalNum: 8,
       textObject: [
-        makeContainer(1, 'tl', 0,                 TOP_Y, SIDE_W,   ROW_H, initial.tl, 1),
-        makeContainer(2, 'tc', SIDE_W,             TOP_Y, CENTER_W, ROW_H, initial.tc, 0),
-        makeContainer(3, 'tr', CANVAS_W - SIDE_W, TOP_Y, SIDE_W,   ROW_H, initial.tr, 0),
-        makeContainer(4, 'ca', 0,                 MID_Y, CANVAS_W, ROW_H, initial.ca, 0),
-        makeContainer(5, 'bl', 0,                 BOT_Y, SIDE_W,   ROW_H, initial.bl, 0),
-        makeContainer(6, 'bc', SIDE_W,             BOT_Y, CENTER_W, ROW_H, initial.bc, 0),
-        makeContainer(7, 'br', CANVAS_W - SIDE_W, BOT_Y, SIDE_W,   ROW_H, initial.br, 0),
+        makeContainer(1, 'tl', 0,                 TOP_Y,   SIDE_W,   ROW_H, initial.tl, 1),
+        makeContainer(2, 'tc', SIDE_W,             TOP_Y,   CENTER_W, ROW_H, initial.tc, 0),
+        makeContainer(3, 'tr', CANVAS_W - SIDE_W, TOP_Y,   SIDE_W,   ROW_H, initial.tr, 0),
+        makeContainer(4, 'ca', 0,                 MID_Y,   CANVAS_W, ROW_H, initial.ca, 0),
+        makeContainer(5, 'mo', 0,                 MODAL_Y, CANVAS_W, ROW_H, initial.mo, 0),
+        makeContainer(6, 'bl', 0,                 BOT_Y,   SIDE_W,   ROW_H, initial.bl, 0),
+        makeContainer(7, 'bc', SIDE_W,             BOT_Y,   CENTER_W, ROW_H, initial.bc, 0),
+        makeContainer(8, 'br', CANVAS_W - SIDE_W, BOT_Y,   SIDE_W,   ROW_H, initial.br, 0),
       ],
     }))
 
