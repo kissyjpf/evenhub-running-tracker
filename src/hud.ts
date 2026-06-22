@@ -58,36 +58,7 @@ function fmtPace(sPerKm: number | null): string {
   return s === 60 ? `${m + 1}:00` : `${m}:${p2(s)}`
 }
 
-function renderModalCells(m: HudModal): HUDCells {
-  const blank: HUDCells = { tl: '', tc: '', tr: '', ca: '', bl: '', bc: '', br: '' }
-
-  if (m.type === 'exit') {
-    return {
-      ...blank,
-      tl: m.sel === 0 ? '[Exit]' : 'Exit',
-      tc: 'Exit?',
-      bl: m.sel === 1 ? '[Cancel]' : 'Cancel',
-      bc: 'tap=ok  ↑↓=pick',
-    }
-  }
-
-  if (m.type === 'stop') {
-    return {
-      ...blank,
-      tl: m.sel === 0 ? '[Save+exit]' : 'Save+exit',
-      tc: 'Save run?',
-      ca: m.sel === 1 ? '[Discard]' : 'Discard',
-      bl: m.sel === 2 ? '[Continue]' : 'Continue',
-      bc: 'tap=ok  ↑↓=pick',
-    }
-  }
-
-  return blank
-}
-
-export function renderHUD(h: HudInput): HUDCells {
-  if (h.modal.type !== 'none') return renderModalCells(h.modal)
-
+function renderBaseCells(h: HudInput): HUDCells {
   const distKm = (h.totalDistanceM / 1000).toFixed(2)
 
   if (h.status === 'idle') {
@@ -116,7 +87,7 @@ export function renderHUD(h: HudInput): HUDCells {
   let segPart = `SEG ${segStr}/km`
   if (h.showCalories && h.calories > 0) segPart += `  ${Math.round(h.calories)}kcal`
 
-  const cells: HUDCells = {
+  return {
     tl: fmtElapsed(h.elapsedMs),
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
@@ -124,6 +95,20 @@ export function renderHUD(h: HudInput): HUDCells {
     bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
     bc: `${icon} lap${h.lapNumber}`,
     br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,
+  }
+}
+
+export function renderHUD(h: HudInput): HUDCells {
+  const cells = renderBaseCells(h)
+
+  // Modal: only replace the middle row (ca) — top and bottom rows keep live data
+  const m = h.modal
+  if (m.type === 'exit') {
+    const opts = ['Exit', 'Cancel']
+    cells.ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
+  } else if (m.type === 'stop') {
+    const opts = ['Save+exit', 'Discard', 'Continue']
+    cells.ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
   }
 
   return cells
