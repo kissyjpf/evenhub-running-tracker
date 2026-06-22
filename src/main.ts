@@ -375,7 +375,10 @@ async function main(): Promise<void> {
       sensors.startG2Imu()
     }
 
-    // Start G2 IMU via SDK
+    // Start G2 IMU via SDK. ImuReportPace.Pxxx values are protocol pacing
+    // codes, NOT literal Hz — the real delivery rate is device-defined, so
+    // g2-imu.ts measures the actual rate from event timestamps rather than
+    // trusting this number. The pace code only nudges the host faster/slower.
     try {
       await b.imuControl(true, ImuReportPace.P200)
     } catch (e) {
