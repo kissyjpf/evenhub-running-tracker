@@ -95,6 +95,22 @@ async function flushHUD(): Promise<void> {
   }
 }
 
+// Immediately push a single cell to the glasses (bypasses cache).
+// Resets the cache entry so flushHUD always re-syncs that cell afterward.
+async function flashCell(key: keyof HUDCells, content: string): Promise<void> {
+  if (!bridge) return
+  const idx = CELL_KEYS.indexOf(key)
+  if (idx < 0) return
+  cachedCells[key] = ''  // force flushHUD to re-send this cell next call
+  await bridge.textContainerUpgrade(new TextContainerUpgrade({
+    containerID:   idx + 1,
+    containerName: key,
+    contentOffset: 0,
+    contentLength: 0,
+    content,
+  })).catch(console.error)
+}
+
 function buildHudInput() {
   const lp = state.lastPace
   return {
@@ -240,7 +256,12 @@ function openExitModal(): void {
   if (!modal || modal.style.display !== 'none') return
   modal.style.display = 'flex'
 
-  document.getElementById('exit-confirm-btn')!.onclick = () => { window.close() }
+  document.getElementById('exit-confirm-btn')!.onclick = () => {
+    const btn = document.getElementById('exit-confirm-btn') as HTMLButtonElement
+    btn.textContent = '終了中...'
+    btn.disabled = true
+    window.close()
+  }
   document.getElementById('exit-cancel-btn')!.onclick = () => { modal.style.display = 'none' }
 }
 
@@ -361,6 +382,7 @@ async function main(): Promise<void> {
         // Single tap: start (idle) | lap (running) | resume (paused)
         case OsEventTypeList.CLICK_EVENT: {
           if (state.status === 'idle') {
+            await flashCell('tc', '⋯')
             // First run: request DeviceMotion permission from user gesture
             if (sensors.path === 'g2imu') {
               const granted = await sensors.tryDeviceMotion()
@@ -385,6 +407,7 @@ async function main(): Promise<void> {
           if (state.status === 'idle') {
             openExitModal()
           } else {
+            await flashCell('tc', 'SAVING')
             await stopRun(b)
           }
           await flushHUD()
