@@ -224,6 +224,42 @@ async function stopRun(b: Bridge): Promise<void> {
   state.runSamples = []
 }
 
+// ── Exit confirmation modal ───────────────────────────────────────────────────
+let exitModalOpen = false
+
+function openExitModal(): void {
+  if (exitModalOpen) return
+  exitModalOpen = true
+  const overlay = document.createElement('div')
+  overlay.style.cssText = 'position:fixed;inset:0;background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;z-index:20'
+
+  const title = document.createElement('p')
+  title.textContent = 'アプリを終了しますか？'
+  title.style.cssText = 'color:#eee;font-size:18px;margin:0;text-align:center'
+
+  const btnRow = document.createElement('div')
+  btnRow.style.cssText = 'display:flex;gap:16px'
+
+  const btnExit = document.createElement('button')
+  btnExit.textContent = '終了'
+  btnExit.style.cssText = 'background:#400;color:#f88;border:1px solid #933;border-radius:4px;padding:10px 28px;font-size:15px;cursor:pointer'
+  btnExit.addEventListener('click', () => { window.close() })
+
+  const btnCancel = document.createElement('button')
+  btnCancel.textContent = 'キャンセル'
+  btnCancel.style.cssText = 'background:#222;color:#ddd;border:1px solid #444;border-radius:4px;padding:10px 28px;font-size:15px;cursor:pointer'
+  btnCancel.addEventListener('click', () => {
+    document.body.removeChild(overlay)
+    exitModalOpen = false
+  })
+
+  btnRow.appendChild(btnExit)
+  btnRow.appendChild(btnCancel)
+  overlay.appendChild(title)
+  overlay.appendChild(btnRow)
+  document.body.appendChild(overlay)
+}
+
 // ── Settings WebView ──────────────────────────────────────────────────────────
 let settingsOpen = false
 
@@ -338,9 +374,16 @@ async function main(): Promise<void> {
 
       switch (type) {
 
-        // Single tap: lap (running) | resume (paused)
+        // Single tap: start (idle) | lap (running) | resume (paused)
         case OsEventTypeList.CLICK_EVENT: {
-          if (state.status === 'running') {
+          if (state.status === 'idle') {
+            // First run: request DeviceMotion permission from user gesture
+            if (sensors.path === 'g2imu') {
+              const granted = await sensors.tryDeviceMotion()
+              if (granted) console.log('[sensors] upgraded to DeviceMotion')
+            }
+            startRun()
+          } else if (state.status === 'running') {
             recordLap(state)
           } else if (state.status === 'paused') {
             if (state.pauseStart !== null) {
@@ -353,15 +396,10 @@ async function main(): Promise<void> {
           break
         }
 
-        // Double tap: start (idle) | stop+save (running/paused)
+        // Double tap: exit modal (idle) | stop+save (running/paused)
         case OsEventTypeList.DOUBLE_CLICK_EVENT: {
           if (state.status === 'idle') {
-            // First run: request DeviceMotion permission from user gesture
-            if (sensors.path === 'g2imu') {
-              const granted = await sensors.tryDeviceMotion()
-              if (granted) console.log('[sensors] upgraded to DeviceMotion')
-            }
-            startRun()
+            openExitModal()
           } else {
             await stopRun(b)
           }
