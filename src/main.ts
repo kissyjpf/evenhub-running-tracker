@@ -71,6 +71,16 @@ async function flushHUD(): Promise<void> {
   if (!bridge) return
   const h = buildHudInput()
   const cells = renderHUD(h)
+
+  // When settings is open, update the phone-side preview and skip glasses transfer
+  if (settingsOpen) {
+    CELL_KEYS.forEach(k => {
+      const el = document.querySelector<HTMLElement>(`#prev-${k}`)
+      if (el) el.textContent = cells[k]
+    })
+    return
+  }
+
   for (let i = 0; i < CELL_KEYS.length; i++) {
     const key = CELL_KEYS[i]!
     if (cells[key] === cachedCells[key]) continue
@@ -244,7 +254,7 @@ function openSettings(b: Bridge): void {
   overlay.style.cssText = 'position:fixed;inset:0;background:#111;overflow:auto;z-index:10'
   document.body.appendChild(overlay)
 
-  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, {
+  const draw = () => renderSettingsUI(overlay, state.settings, state.calibRecords, cachedCells, {
     onSettingsChange(s) {
       state.settings = s
       persistAll(b).catch(console.error)
