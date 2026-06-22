@@ -64,7 +64,7 @@ export function processBandpass(x: number, f: BandpassFilter): number {
 }
 
 // Autocorrelation-based cadence estimation.
-// Returns spm clamped to [140, 220], or null if signal is too weak.
+// Returns spm in [50, 200], or null if signal is too weak or not periodic.
 // Optimized: O(n * lagRange) where lagRange is typically small.
 export function estimateCadence(samples: number[], fs: number): number | null {
   const n = samples.length
@@ -83,11 +83,13 @@ export function estimateCadence(samples: number[], fs: number): number | null {
     variance += x[i] ** 2
   }
   variance /= n
-  if (variance < 1e-8) return null
 
-  // Lag range: 140–220 spm
-  const lagMin = Math.max(1, Math.floor((fs * 60) / 220))
-  const lagMax = Math.min(n - 1, Math.floor((fs * 60) / 140))
+  // Require meaningful signal amplitude (~0.22 m/s² RMS minimum)
+  if (variance < 0.05) return null
+
+  // Lag range: 50–200 spm (covers walking and running)
+  const lagMin = Math.max(1, Math.floor((fs * 60) / 200))
+  const lagMax = Math.min(n - 1, Math.floor((fs * 60) / 50))
   if (lagMin >= lagMax) return null
 
   let bestLag = lagMin
@@ -103,10 +105,11 @@ export function estimateCadence(samples: number[], fs: number): number | null {
     if (acf > bestAcf) { bestAcf = acf; bestLag = lag }
   }
 
-  if (bestAcf <= 0) return null
+  // Require at least 15% normalized correlation — rejects aperiodic noise
+  if (bestAcf / variance < 0.15) return null
 
   const cadence = (fs * 60) / bestLag
-  return Math.max(140, Math.min(220, cadence))
+  return Math.max(50, Math.min(200, cadence))
 }
 
 // RMS amplitude of a buffer
