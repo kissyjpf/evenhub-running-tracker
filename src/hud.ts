@@ -15,6 +15,10 @@ export interface HudInput {
   segmentPaceSPerKm: number | null
   kValue: number
   calibRecordCount: number
+  totalSteps: number
+  calories: number
+  showSteps: boolean
+  showCalories: boolean
 }
 
 export interface HUDCells {
@@ -72,11 +76,16 @@ export function renderHUD(h: HudInput): HUDCells {
   const lapDistKm = (h.lapDistanceM / 1000).toFixed(2)
   const icon    = h.status === 'running' ? '●' : '◐'
 
+  let cadPart = `CAD ${cadStr}`
+  if (h.showSteps) cadPart += `  ${h.totalSteps}stp`
+  let segPart = `SEG ${segStr}/km`
+  if (h.showCalories && h.calories > 0) segPart += `  ${Math.round(h.calories)}kcal`
+
   return {
     tl: fmtElapsed(h.elapsedMs),
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
-    ca: `CAD ${cadStr}  •  SEG ${segStr}/km`,
+    ca: `${cadPart}  •  ${segPart}`,
     bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
     bc: `${icon} lap${h.lapNumber}`,
     br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,

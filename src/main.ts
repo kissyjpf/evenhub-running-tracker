@@ -113,6 +113,8 @@ async function flashCell(key: keyof HUDCells, content: string): Promise<void> {
 
 function buildHudInput() {
   const lp = state.lastPace
+  const weightKg = state.settings.weight_kg ?? 65
+  const calories = (state.totalDistanceM / 1000) * weightKg * 1.036
   return {
     status:              state.status,
     elapsedMs:           activeElapsedMs(state),
@@ -125,6 +127,10 @@ function buildHudInput() {
     segmentPaceSPerKm:   state.segmentPaceSPerKm,
     kValue:              pace.k.value,
     calibRecordCount:    state.calibRecords.length,
+    totalSteps:          Math.round(totalStepEst),
+    calories,
+    showSteps:           state.settings.showSteps,
+    showCalories:        state.settings.showCalories,
   }
 }
 

@@ -30,6 +30,7 @@ export function renderSettingsUI(
     margin: 6px 0; font-size: 13px; }
   input[type=number] { background: #222; color: #eee; border: 1px solid #444;
     border-radius: 4px; padding: 4px 8px; width: 90px; font-size: 13px; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: #8cf; cursor: pointer; }
   .btn { background: #222; color: #ddd; border: 1px solid #444;
     border-radius: 4px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
   .btn:active { background: #333; }
@@ -81,6 +82,16 @@ export function renderSettingsUI(
     <span class="hud-r" id="prev-br">${hudCells.br}</span>
   </div>
 </div>
+
+<h2>DISPLAY</h2>
+<label>
+  <input type="checkbox" id="show-steps" ${settings.showSteps ? 'checked' : ''} />
+  Show step count on glasses
+</label>
+<label>
+  <input type="checkbox" id="show-calories" ${settings.showCalories ? 'checked' : ''} />
+  Show calories${settings.weight_kg === null ? '&ensp;<span style="color:#888;font-size:11px">(weight unset → using 65 kg)</span>' : ''}
+</label>
 
 <h2>PROFILE</h2>
 <label>Height
@@ -185,6 +196,14 @@ export function renderSettingsUI(
       if (!confirm('Delete this calibration record?')) return
       cb.onRecordsChange(deleteRecord(records, idx))
     })
+  })
+
+  // Display toggles — save immediately on change
+  root.querySelector('#show-steps')!.addEventListener('change', e => {
+    cb.onSettingsChange({ ...settings, showSteps: (e.target as HTMLInputElement).checked })
+  })
+  root.querySelector('#show-calories')!.addEventListener('change', e => {
+    cb.onSettingsChange({ ...settings, showCalories: (e.target as HTMLInputElement).checked })
   })
 
   root.querySelector('#close-btn')!.addEventListener('click', cb.onClose)

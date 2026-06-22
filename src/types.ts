@@ -31,6 +31,8 @@ export interface Settings {
   weight_kg: number | null
   min_distance_gps: number
   min_distance_known: number
+  showSteps: boolean
+  showCalories: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -38,6 +40,8 @@ export const DEFAULT_SETTINGS: Settings = {
   weight_kg: null,
   min_distance_gps: 800,
   min_distance_known: 400,
+  showSteps: true,
+  showCalories: true,
 }
 
 export type SensorPath = 'devicemotion' | 'g2imu' | 'gps-only'
