@@ -67,6 +67,7 @@ function makeContainer(
 let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', bl:'', bc:'', br:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
+let helpVisible = false
 let helpTimer: ReturnType<typeof setTimeout> | null = null
 
 async function flushHUD(): Promise<void> {
@@ -126,6 +127,7 @@ function buildHudInput() {
     calories,
     showSteps:           state.settings.showSteps,
     showCalories:        state.settings.showCalories,
+    helpVisible,
     modal:               hudModal,
   }
 }
@@ -272,10 +274,10 @@ function discardRun(): void {
 
 // ── HUD modal / help ──────────────────────────────────────────────────────────
 function startHelp(): void {
-  hudModal = { type: 'help' }
+  helpVisible = true
   if (helpTimer) clearTimeout(helpTimer)
   helpTimer = setTimeout(() => {
-    if (hudModal.type === 'help') hudModal = { type: 'none' }
+    helpVisible = false
     helpTimer = null
     flushHUD().catch(console.error)
   }, 4000)
@@ -309,17 +311,6 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
       // sel === 2: continue — no state change
     } else {
       hudModal = { type: 'none' }  // double-tap = continue
-    }
-
-  } else if (m.type === 'help') {
-    if (helpTimer) { clearTimeout(helpTimer); helpTimer = null }
-    if (type === OsEventTypeList.DOUBLE_CLICK_EVENT) {
-      // double-tap during help = open the appropriate menu
-      hudModal = state.status === 'idle'
-        ? { type: 'exit', sel: 0 }
-        : { type: 'stop', sel: 0 }
-    } else {
-      hudModal = { type: 'none' }
     }
   }
 
