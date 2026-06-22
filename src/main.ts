@@ -28,7 +28,7 @@ const ROW_H     = 28
 const SIDE_W    = 130
 const CENTER_W  = CANVAS_W - SIDE_W * 2   // 316
 const TOP_Y     = 0
-const MID_Y     = ROW_H                   // 28
+const MID_Y     = Math.round((CANVAS_H - ROW_H) / 2)  // 130 — vertical centre
 const BOT_Y     = CANVAS_H - ROW_H        // 260
 
 // ── Module-level singletons ──────────────────────────────────────────────────
@@ -146,14 +146,14 @@ function tick(): void {
   }
   pendingDistM = 0
 
-  // Estimate cadence step count
-  const cadNow = sensors.lastCadenceSpm
+  // Estimate cadence step count — only count fresh, non-stale cadence so
+  // steps stop accumulating the moment motion stops or the sensor stalls.
+  const cadNow = sensors.freshCadence()
   if (state.status === 'running' && cadNow !== null) {
     totalStepEst += cadNow / 60   // 1s tick → cadence/60 steps
   }
 
   // Update pace estimator
-  const gpsFix = sensors.gps.getFix()
   const result = pace.update({
     gpsSpeedMs:   sensors.gps.lastSpeedMs,
     gpsAccuracyM: sensors.gps.lastAccuracyM,

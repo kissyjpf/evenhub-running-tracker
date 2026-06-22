@@ -92,23 +92,40 @@ export function estimateCadence(samples: number[], fs: number): number | null {
   const lagMax = Math.min(n - 1, Math.floor((fs * 60) / 50))
   if (lagMin >= lagMax) return null
 
+  const acf = new Float64Array(lagMax + 1)
   let bestLag = lagMin
   let bestAcf = -Infinity
 
   for (let lag = lagMin; lag <= lagMax; lag++) {
-    let acf = 0
+    let sum = 0
     const count = n - lag
     for (let i = 0; i < count; i++) {
-      acf += (x[i] ?? 0) * (x[i + lag] ?? 0)
+      sum += (x[i] ?? 0) * (x[i + lag] ?? 0)
     }
-    acf /= count
-    if (acf > bestAcf) { bestAcf = acf; bestLag = lag }
+    sum /= count
+    acf[lag] = sum
+    if (sum > bestAcf) { bestAcf = sum; bestLag = lag }
   }
 
   // Require at least 15% normalized correlation — rejects aperiodic noise
   if (bestAcf / variance < 0.15) return null
 
-  const cadence = (fs * 60) / bestLag
+  // Parabolic interpolation around the peak for sub-sample lag resolution.
+  // Without this, integer-lag quantisation makes cadence jump ~8–11 spm at a
+  // time (worse at high spm / low sample rate), giving a jittery reading.
+  let refinedLag = bestLag
+  if (bestLag > lagMin && bestLag < lagMax) {
+    const ym1 = acf[bestLag - 1] ?? 0
+    const y0  = acf[bestLag] ?? 0
+    const yp1 = acf[bestLag + 1] ?? 0
+    const denom = ym1 - 2 * y0 + yp1
+    if (denom !== 0) {
+      const delta = 0.5 * (ym1 - yp1) / denom
+      if (delta > -1 && delta < 1) refinedLag = bestLag + delta
+    }
+  }
+
+  const cadence = (fs * 60) / refinedLag
   return Math.max(50, Math.min(200, cadence))
 }
 

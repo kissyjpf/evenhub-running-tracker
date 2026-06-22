@@ -23,9 +23,17 @@ export class SensorManager {
   // Last known cadence (from whichever active path)
   public lastCadenceSpm: number | null = null
   public lastVertAmp = 0
+  private lastCadenceMs = 0
 
   onCadence(cb: (u: CadenceUpdate) => void): void { this._cadenceCb = cb }
   onGps(cb: (fix: GpsFix) => void): void { this._gpsCb = cb }
+
+  /** Cadence only if it was measured recently; null if stale or absent. */
+  freshCadence(maxAgeMs = 3000): number | null {
+    if (this.lastCadenceSpm === null) return null
+    if (Date.now() - this.lastCadenceMs > maxAgeMs) return null
+    return this.lastCadenceSpm
+  }
 
   initGps(): boolean {
     return this.gps.start(fix => this._gpsCb?.(fix))
@@ -39,6 +47,7 @@ export class SensorManager {
       this.path = 'devicemotion'
       this.lastCadenceSpm = spm
       this.lastVertAmp = amp
+      if (spm !== null) this.lastCadenceMs = Date.now()
       this._cadenceCb?.({ spm, vertAmp: amp, path: 'devicemotion' })
     })
     return true
@@ -52,6 +61,7 @@ export class SensorManager {
       if (this.path !== 'devicemotion') {
         this.lastCadenceSpm = spm
         this.lastVertAmp = amp
+        if (spm !== null) this.lastCadenceMs = Date.now()
         this._cadenceCb?.({ spm, vertAmp: amp, path: 'g2imu' })
       }
     })
