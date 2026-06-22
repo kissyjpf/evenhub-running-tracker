@@ -67,8 +67,6 @@ function makeContainer(
 let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', bl:'', bc:'', br:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
-let helpVisible = false
-let helpTimer: ReturnType<typeof setTimeout> | null = null
 
 async function flushHUD(): Promise<void> {
   if (!bridge) return
@@ -125,7 +123,6 @@ function buildHudInput() {
     calories,
     showSteps:           state.settings.showSteps,
     showCalories:        state.settings.showCalories,
-    helpVisible,
     modal:               hudModal,
   }
 }
@@ -270,17 +267,7 @@ function discardRun(): void {
   pace.resetEma()
 }
 
-// ── HUD modal / help ──────────────────────────────────────────────────────────
-function startHelp(): void {
-  helpVisible = true
-  if (helpTimer) clearTimeout(helpTimer)
-  helpTimer = setTimeout(() => {
-    helpVisible = false
-    helpTimer = null
-    flushHUD().catch(console.error)
-  }, 4000)
-}
-
+// ── HUD modal ─────────────────────────────────────────────────────────────────
 async function handleModalGesture(type: number, b: Bridge): Promise<void> {
   const m = hudModal
   if (m.type === 'none') return
@@ -436,7 +423,6 @@ async function main(): Promise<void> {
               if (granted) console.log('[sensors] upgraded to DeviceMotion')
             }
             startRun()
-            startHelp()
           } else if (state.status === 'running') {
             recordLap(state)
           } else if (state.status === 'paused') {
@@ -469,7 +455,7 @@ async function main(): Promise<void> {
           break
         }
 
-        // Swipe down: resume (paused) | show help (idle/running)
+        // Swipe down: resume (paused)
         case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
           if (state.status === 'paused') {
             if (state.pauseStart !== null) {
@@ -477,10 +463,8 @@ async function main(): Promise<void> {
               state.pauseStart = null
             }
             state.status = 'running'
-          } else {
-            startHelp()
+            await flushHUD()
           }
-          await flushHUD()
           break
         }
       }

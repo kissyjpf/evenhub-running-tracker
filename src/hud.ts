@@ -24,7 +24,6 @@ export interface HudInput {
   calories: number
   showSteps: boolean
   showCalories: boolean
-  helpVisible: boolean
   modal: HudModal
 }
 
@@ -63,15 +62,24 @@ function renderModalCells(m: HudModal): HUDCells {
   const blank: HUDCells = { tl: '', tc: '', tr: '', ca: '', bl: '', bc: '', br: '' }
 
   if (m.type === 'exit') {
-    const opts = ['終了する', 'キャンセル']
-    const ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
-    return { ...blank, tc: '終了確認', ca, bc: 'tap=確定  ↑↓=選択' }
+    return {
+      ...blank,
+      tl: m.sel === 0 ? '[Exit]' : 'Exit',
+      tc: 'Exit?',
+      bl: m.sel === 1 ? '[Cancel]' : 'Cancel',
+      bc: 'tap=ok  ↑↓=pick',
+    }
   }
 
   if (m.type === 'stop') {
-    const opts = ['保存+終了', '破棄', '継続']
-    const ca = opts.map((o, i) => i === m.sel ? `[${o}]` : o).join('  ·  ')
-    return { ...blank, tc: '記録を保存?', ca, bc: 'tap=確定  ↑↓=選択' }
+    return {
+      ...blank,
+      tl: m.sel === 0 ? '[Save+exit]' : 'Save+exit',
+      tc: 'Save run?',
+      ca: m.sel === 1 ? '[Discard]' : 'Discard',
+      bl: m.sel === 2 ? '[Continue]' : 'Continue',
+      bc: 'tap=ok  ↑↓=pick',
+    }
   }
 
   return blank
@@ -92,7 +100,7 @@ export function renderHUD(h: HudInput): HUDCells {
       tr: '0.00km',
       ca: calStr,
       bl: '',
-      bc: '○ tap=start  dbl=exit  ↓=help',
+      bc: '○ tap=start  dbl=exit',
       br: '',
     }
   }
@@ -116,12 +124,6 @@ export function renderHUD(h: HudInput): HUDCells {
     bl: `L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}`,
     bc: `${icon} lap${h.lapNumber}`,
     br: `k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`,
-  }
-
-  if (h.helpVisible) {
-    cells.bl = 'tap=ラップ'
-    cells.bc = 'dbl=停止/終了  ↑=一時停止'
-    cells.br = '↓=ヘルプ'
   }
 
   return cells
