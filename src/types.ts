@@ -33,6 +33,7 @@ export interface Settings {
   min_distance_known: number
   showSteps: boolean
   showCalories: boolean
+  useWakeLock: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS: Settings = {
   min_distance_known: 400,
   showSteps: true,
   showCalories: true,
+  useWakeLock: true,
 }
 
 export type SensorPath = 'devicemotion' | 'g2imu' | 'gps-only'

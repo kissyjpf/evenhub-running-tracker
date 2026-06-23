@@ -48,29 +48,38 @@ export function insertRecord(records: CalibRecord[], rec: CalibRecord): CalibRec
   return next
 }
 
-// Edit distance of a record (settings UI). Re-derives step_length, speed, source.
+// Edit distance and steps of a record (settings UI). Re-derives step_length, speed, cadence, source.
 // Returns { records, error } — error is non-null on validation failure.
-export function editRecordDistance(
+export function editRecordManual(
   records: CalibRecord[],
   idx: number,
   newDistanceM: number,
+  newSteps: number,
 ): { records: CalibRecord[]; error: string | null } {
   const rec = records[idx]
   if (!rec) return { records, error: 'Record not found' }
 
-  const newStepLen = newDistanceM / rec.steps
-  if (newStepLen < 0.5 || newStepLen > 2.2) {
+  if (newSteps <= 0) return { records, error: 'Steps must be > 0' }
+
+  const newStepLen = newDistanceM / newSteps
+  if (newStepLen < 0.3 || newStepLen > 2.5) {
     return {
       records,
-      error: `Result step_length ${newStepLen.toFixed(3)} m outside [0.5, 2.2] — check distance`,
+      error: `Result step_length ${newStepLen.toFixed(3)} m outside [0.3, 2.5] — check distance and steps`,
     }
   }
+
+  const durationS = rec.duration_ms / 1000
+  const newCadence = durationS > 0 ? (newSteps / durationS) * 60 : 0
+  const newSpeed = durationS > 0 ? newDistanceM / durationS : 0
 
   const updated: CalibRecord = {
     ...rec,
     distance_m: newDistanceM,
+    steps: newSteps,
     step_length_m: newStepLen,
-    speed_ms: newDistanceM / (rec.duration_ms / 1000),
+    speed_ms: newSpeed,
+    cadence_spm: newCadence,
     source: 'manual',
     edited: true,
   }

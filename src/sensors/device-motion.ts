@@ -106,7 +106,16 @@ export class DeviceMotionSensor {
       this.filterFs = fs
     }
 
-    const filtered = processBandpass(vertical, this.filter)
+    // Gyroscope fusion: rotation rate (deg/s) norm scaled to roughly match accel magnitude
+    const r = e.rotationRate
+    let gyroNorm = 0
+    if (r && r.alpha !== null && r.beta !== null && r.gamma !== null) {
+      const mag = Math.sqrt(r.alpha * r.alpha + r.beta * r.beta + r.gamma * r.gamma)
+      gyroNorm = mag * 0.02
+    }
+
+    const compositeRaw = vertical + gyroNorm
+    const filtered = processBandpass(compositeRaw, this.filter)
     this.buf.push(filtered)
 
     const maxBuf = Math.ceil(fs * WINDOW_S)
