@@ -2,7 +2,7 @@
 // Lets the user edit height/weight and calibration records.
 
 import type { CalibRecord, Settings } from '../types'
-import { bandCoverage, editRecordDistance, deleteRecord } from '../calibration/records'
+import { bandCoverage, editRecordManual, deleteRecord } from '../calibration/records'
 
 export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
@@ -10,6 +10,13 @@ export interface SettingsCallbacks {
 }
 
 const BAND_LABELS = ['>5:33 /km', '4:46-5:33', '4:10-4:45', '3:42-4:09', '<3:42 /km']
+
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return `${m}:${sec.toString().padStart(2, '0')}`
+}
 
 export function renderSettingsUI(
   root: HTMLElement,
@@ -41,8 +48,8 @@ export function renderSettingsUI(
   .sw th { color: #777; font-weight: normal; text-align: left;
     padding: 5px 4px; border-bottom: 1px solid #222; }
   .sw td { padding: 7px 4px; border-bottom: 1px solid #1a1a1a; vertical-align: middle; }
-  .sw .dist-in { width: 72px; background: #222; color: #eee; border: 1px solid #333;
-    border-radius: 3px; padding: 4px 6px; font-size: 13px; }
+  .sw .dist-in, .sw .step-in { width: 60px; background: #222; color: #eee; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font-size: 13px; margin: 2px 0; }
   .sw .src-tag { font-size: 12px; color: #666; }
   .sw .src-tag.manual { color: #8cf; }
 </style>
@@ -58,6 +65,10 @@ export function renderSettingsUI(
     value="${settings.weight_kg !== null ? settings.weight_kg : ''}" />
   <span style="font-size:13px;color:#666">kg</span>
 </label>
+<label style="display:flex;align-items:center;gap:6px;margin:12px 0;">
+  <input type="checkbox" id="wakelock" ${settings.useWakeLock ? 'checked' : ''} />
+  <span>Keep Screen On (WakeLock)</span>
+</label>
 <button class="btn primary" id="save-profile">Save profile</button>
 <div id="profile-msg" style="font-size:13px;color:#4a4;margin:6px 0;min-height:16px"></div>
 
@@ -67,8 +78,8 @@ export function renderSettingsUI(
 <h2>CALIBRATION RECORDS (${records.length}/10)</h2>
 <table>
   <thead>
-    <tr><th>#</th><th>Date</th><th>v m/s</th><th>Cad</th><th>Step m</th><th>Src</th>
-      <th>Dist m</th><th></th></tr>
+    <tr><th>#</th><th>Date</th><th>Time</th><th>Step m</th><th>Src</th>
+      <th>Dist / Steps</th><th></th></tr>
   </thead>
   <tbody id="rec-body"></tbody>
 </table>
@@ -98,12 +109,15 @@ export function renderSettingsUI(
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td>${date}</td>
-      <td>${r.speed_ms.toFixed(2)}</td>
-      <td>${Math.round(r.cadence_spm)}</td>
+      <td>${fmtElapsed(r.duration_ms)}</td>
       <td>${r.step_length_m.toFixed(3)}</td>
       <td><span class="src-tag ${srcCls}">${srcLabel}</span></td>
-      <td><input class="dist-in" type="number" min="100" max="50000"
-          value="${Math.round(r.distance_m)}" data-idx="${idx}" /></td>
+      <td>
+        <input class="dist-in" type="number" min="1" max="50000"
+          value="${Math.round(r.distance_m)}" data-idx="${idx}" title="Distance (m)" /><br/>
+        <input class="step-in" type="number" min="1" max="100000"
+          value="${Math.round(r.steps)}" data-idx="${idx}" title="Steps" />
+      </td>
       <td>
         <button class="btn edit-btn" data-idx="${idx}" style="padding:2px 6px">✓</button>
         <button class="btn danger del-btn" data-idx="${idx}" style="padding:2px 6px">✕</button>
@@ -115,6 +129,7 @@ export function renderSettingsUI(
   root.querySelector('#save-profile')!.addEventListener('click', () => {
     const h = parseInt((root.querySelector('#height') as HTMLInputElement).value)
     const wRaw = parseFloat((root.querySelector('#weight') as HTMLInputElement).value)
+    const wakeLock = (root.querySelector('#wakelock') as HTMLInputElement).checked
     const msg = root.querySelector('#profile-msg')!
     if (!isFinite(h) || h < 100 || h > 250) {
       msg.textContent = 'Invalid height'
@@ -124,19 +139,22 @@ export function renderSettingsUI(
       ...settings,
       height_cm: h,
       weight_kg: isFinite(wRaw) && wRaw > 0 ? wRaw : null,
+      useWakeLock: wakeLock,
     })
     msg.textContent = 'Saved'
     setTimeout(() => { msg.textContent = '' }, 2000)
   })
 
-  // Edit distance
+  // Edit distance and steps
   root.querySelectorAll('.edit-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       const idx = parseInt((e.currentTarget as HTMLElement).dataset['idx'] ?? '0')
-      const input = root.querySelector<HTMLInputElement>(`.dist-in[data-idx="${idx}"]`)!
-      const newDist = parseFloat(input.value)
-      if (!isFinite(newDist) || newDist <= 0) return
-      const { records: updated, error } = editRecordDistance(records, idx, newDist)
+      const distInput = root.querySelector<HTMLInputElement>(`.dist-in[data-idx="${idx}"]`)!
+      const stepInput = root.querySelector<HTMLInputElement>(`.step-in[data-idx="${idx}"]`)!
+      const newDist = parseFloat(distInput.value)
+      const newSteps = parseInt(stepInput.value)
+      if (!isFinite(newDist) || newDist <= 0 || !isFinite(newSteps) || newSteps <= 0) return
+      const { records: updated, error } = editRecordManual(records, idx, newDist, newSteps)
       if (error) { alert(error); return }
       cb.onRecordsChange(updated)
     })

@@ -56,10 +56,42 @@ export function harvestCalibRecord(
   source: 'gps' | 'known',
   knownDistanceM?: number,
 ): CalibRecord | null {
-  if (allSamples.length < 30) return null
+  if (allSamples.length < 2) return null
+
+  const fallbackRecord = (): CalibRecord => {
+    const first = allSamples[0]!
+    const last = allSamples[allSamples.length - 1]!
+    const distM = last.distM - first.distM
+    const steps = last.steps - first.steps
+    const durationMs = last.ts - first.ts
+    const speedMs = durationMs > 0 ? distM / (durationMs / 1000) : 0
+    const stepLenM = steps > 0 ? distM / steps : 0
+    const cadences = allSamples.map(s => s.cadenceSpm).filter((c): c is number => c !== null)
+    const avgCadence = cadences.length > 0 ? cadences.reduce((a, b) => a + b, 0) / cadences.length : 0
+    const avgAmp = allSamples.reduce((s, v) => s + v.verticalAmp, 0) / allSamples.length
+    const avgAcc = allSamples.reduce((s, v) => s + v.gpsAccuracyM, 0) / allSamples.length
+    const { cov: speedCov } = segSpeedStats(allSamples)
+
+    return {
+      ts: Date.now(),
+      distance_m: distM,
+      duration_ms: durationMs,
+      source: 'manual',
+      gps_accuracy_m: avgAcc,
+      steps,
+      step_length_m: stepLenM,
+      cadence_spm: avgCadence,
+      vertical_amp: avgAmp,
+      speed_ms: speedMs,
+      speed_cov: speedCov,
+      edited: false,
+    }
+  }
+
+  if (allSamples.length < 30) return fallbackRecord()
 
   const [s0, s1] = longestSteadySegment(allSamples)
-  if (s1 - s0 < 20) return null
+  if (s1 - s0 < 20) return fallbackRecord()
 
   const seg = allSamples.slice(s0, s1 + 1)
   const first = seg[0]!
@@ -71,7 +103,7 @@ export function harvestCalibRecord(
   const steps = last.steps - first.steps
   const durationMs = last.ts - first.ts
 
-  if (steps <= 0 || durationMs <= 0 || distM <= 0) return null
+  if (steps <= 0 || durationMs <= 0 || distM <= 0) return fallbackRecord()
 
   const stepLenM = distM / steps
   const speedMs = distM / (durationMs / 1000)
@@ -97,8 +129,8 @@ export function harvestCalibRecord(
   }, settings)
 
   if (!gateResult.pass) {
-    console.log('[harvest] rejected:', gateResult.reason)
-    return null
+    console.log('[harvest] rejected:', gateResult.reason, '-> falling back to manual')
+    return fallbackRecord()
   }
 
   return {

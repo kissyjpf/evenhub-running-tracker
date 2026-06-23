@@ -131,6 +131,7 @@ function buildHudInput() {
     calories,
     showSteps:           state.settings.showSteps,
     showCalories:        state.settings.showCalories,
+    gpsAccuracyM:        sensors.gps.lastAccuracyM,
     modal:               hudModal,
   }
 }
@@ -148,9 +149,15 @@ function speedCov(): number {
 function tick(): void {
   const now = Date.now()
 
-  // Consume accumulated GPS distance
+  // Consume accumulated GPS distance or fallback to dead reckoning
+  const gpsOk = sensors.gps.lastAccuracyM < 30 && sensors.gps.lastSpeedMs !== null
   if (state.status === 'running') {
-    state.totalDistanceM += pendingDistM
+    if (gpsOk) {
+      state.totalDistanceM += pendingDistM
+    } else if (state.lastPace) {
+      // Dead reckoning: speedMs * dt (dt = 1s)
+      state.totalDistanceM += state.lastPace.speedMs * 1.0
+    }
   }
   pendingDistM = 0
 
@@ -222,6 +229,34 @@ async function loadAll(b: Bridge): Promise<void> {
   }
 }
 
+// ── WakeLock ─────────────────────────────────────────────────────────────────
+let wakeLock: any = null
+
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try {
+      wakeLock = await (navigator as any).wakeLock.request('screen')
+      console.log('[WakeLock] Active')
+    } catch (err: any) {
+      console.warn('[WakeLock] Failed:', err.message)
+    }
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock !== null) {
+    wakeLock.release().catch(() => {})
+    wakeLock = null
+    console.log('[WakeLock] Released')
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.status !== 'idle' && state.settings.useWakeLock) {
+    requestWakeLock()
+  }
+})
+
 // ── Run lifecycle ─────────────────────────────────────────────────────────────
 function startRun(): void {
   state.status             = 'running'
@@ -239,27 +274,33 @@ function startRun(): void {
   totalStepEst             = 0
   lapScrollOffset          = 0
   pace.resetEma()
+  
+  if (state.settings.useWakeLock) {
+    requestWakeLock()
+  }
 }
 
 async function stopRun(b: Bridge): Promise<void> {
   state.status = 'idle'
 
   // Auto-harvest calibration record from this run
-  if (state.runSamples.length >= 30) {
+  if (state.runSamples.length >= 2) {
     const rec = harvestCalibRecord(state.runSamples, state.settings, 'gps')
     if (rec !== null) {
       state.calibRecords = insertRecord(state.calibRecords, rec)
       console.log('[harvest] new record:', rec.cadence_spm.toFixed(0), 'spm',
         rec.step_length_m.toFixed(3), 'm/step')
     } else {
-      console.log('[harvest] no record — gate rejected or no steady segment')
+      console.log('[harvest] no record')
     }
   } else {
-    console.log('[harvest] too few samples:', state.runSamples.length, '(need ≥30)')
+    console.log('[harvest] too few samples:', state.runSamples.length, '(need ≥2)')
   }
 
   await persistAll(b)
   state.runSamples = []
+  
+  releaseWakeLock()
 }
 
 // ── Discard run (no save) ─────────────────────────────────────────────────────
@@ -279,6 +320,8 @@ function discardRun(): void {
   totalStepEst            = 0
   lapScrollOffset         = 0
   pace.resetEma()
+  
+  releaseWakeLock()
 }
 
 // ── HUD modal ─────────────────────────────────────────────────────────────────

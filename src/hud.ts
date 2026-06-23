@@ -25,6 +25,7 @@ export interface HudInput {
   calories: number
   showSteps: boolean
   showCalories: boolean
+  gpsAccuracyM?: number
   modal: HudModal
 }
 
@@ -67,11 +68,12 @@ function renderBaseCells(h: HudInput): HUDCells {
     const calStr = h.calibRecordCount > 0
       ? `${h.calibRecordCount} records  k=${h.kValue.toFixed(2)}`
       : 'no calibration — run to auto-calibrate'
+    const gpsStr = (h.gpsAccuracyM ?? 999) < 30 ? 'GPS:OK' : 'GPS:--'
     return {
       tl: '00:00',
       tc: 'READY',
       tr: '0.00km',
-      ca: calStr,
+      ca: `${gpsStr}  •  ${calStr}`,
       mo1: ' ', mo2: ' ', mo3: ' ',
       bot: '○ tap=start  dbl=exit',
     }
@@ -109,11 +111,13 @@ function renderBaseCells(h: HudInput): HUDCells {
     visibleLines = allLines.slice(startIdx, endIdx)
   }
 
+  const gpsStr = (h.gpsAccuracyM ?? 999) < 30 ? 'GPS:OK' : 'GPS:--'
+
   return {
     tl: fmtElapsed(h.elapsedMs),
     tc: `${paceStr}/km`,
     tr: `${distKm}km`,
-    ca: `${cadPart}  •  ${segPart}`,
+    ca: `${gpsStr}  •  ${cadPart}  •  ${segPart}`,
     mo1: ' ', mo2: ' ', mo3: ' ',
     bot: visibleLines.join('\n'),
   }

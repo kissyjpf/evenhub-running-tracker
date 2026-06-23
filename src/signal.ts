@@ -84,8 +84,8 @@ export function estimateCadence(samples: number[], fs: number): number | null {
   }
   variance /= n
 
-  // Require meaningful signal amplitude (~0.22 m/s² RMS minimum)
-  if (variance < 0.05) return null
+  // Require meaningful signal amplitude (~0.03 G RMS minimum for walking)
+  if (variance < 0.001) return null
 
   // Lag range: 50–200 spm (covers walking and running)
   const lagMin = Math.max(1, Math.floor((fs * 60) / 200))
@@ -107,8 +107,33 @@ export function estimateCadence(samples: number[], fs: number): number | null {
     if (sum > bestAcf) { bestAcf = sum; bestLag = lag }
   }
 
-  // Require at least 15% normalized correlation — rejects aperiodic noise
-  if (bestAcf / variance < 0.15) return null
+  // Check for half-lag peak (to avoid halving cadence due to asymmetric walking)
+  const halfLag = Math.round(bestLag / 2)
+  if (halfLag >= lagMin) {
+    let localMaxLag = halfLag
+    let localMaxAcf = -Infinity
+    const searchRange = Math.max(1, Math.floor(halfLag * 0.2)) // ±20%
+    for (let lag = halfLag - searchRange; lag <= halfLag + searchRange; lag++) {
+      if (lag >= lagMin && lag <= lagMax) {
+        if (acf[lag] > localMaxAcf) {
+          localMaxAcf = acf[lag]
+          localMaxLag = lag
+        }
+      }
+    }
+    // If half-lag peak is prominent, use it (step freq instead of stride freq)
+    if (localMaxAcf > bestAcf * 0.35) {
+      const isLocalPeak = localMaxLag === lagMin || localMaxLag === lagMax || 
+                          (acf[localMaxLag] >= acf[localMaxLag - 1] && acf[localMaxLag] >= acf[localMaxLag + 1])
+      if (isLocalPeak) {
+        bestLag = localMaxLag
+        bestAcf = localMaxAcf
+      }
+    }
+  }
+
+  // Require at least 8% normalized correlation — rejects aperiodic noise
+  if (bestAcf / variance < 0.08) return null
 
   // Parabolic interpolation around the peak for sub-sample lag resolution.
   // Without this, integer-lag quantisation makes cadence jump ~8–11 spm at a
