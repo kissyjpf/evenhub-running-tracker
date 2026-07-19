@@ -85,9 +85,13 @@ function makeContainer(
   })
 }
 
-let cachedCells: HUDCells = { l1:'', l2:'', l3:'', info:'', pb:'', pu:'', mo:'' }
+let cachedCells: HUDCells = { l1:'', l2:'', l3:'', info:'', pb:'', pu:'', mo:'', lap:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
+
+// Lap list (separate scrollable screen opened with a swipe)
+let lapView = false
+let lapScrollOffset = 0
 
 // Top-right info block sources
 let weather: WeatherInfo | null = null
@@ -140,9 +144,12 @@ function buildHudInput() {
     status:              state.status,
     elapsedMs:           activeElapsedMs(state),
     totalDistanceM:      state.totalDistanceM,
+    laps:                state.laps,
     lapNumber:           state.laps.length + 1,
     lapDistanceM:        lapDistanceM(state),
     lapElapsedMs:        lapElapsedMs(state),
+    lapView,
+    lapScrollOffset,
     paceSPerKm:          lp?.paceSPerKm ?? null,
     cadenceSpm:          lp?.cadenceSpm ?? null,
     segmentPaceSPerKm:   state.segmentPaceSPerKm,
@@ -297,6 +304,8 @@ function startRun(): void {
   state.runSamples         = []
   pendingDistM             = 0
   totalStepEst             = 0
+  lapView                  = false
+  lapScrollOffset          = 0
   pace.resetEma()
 
   if (state.settings.useWakeLock) {
@@ -342,6 +351,8 @@ function discardRun(): void {
   state.runSamples        = []
   pendingDistM            = 0
   totalStepEst            = 0
+  lapView                 = false
+  lapScrollOffset         = 0
   pace.resetEma()
 
   releaseWakeLock()
@@ -456,7 +467,7 @@ async function main(): Promise<void> {
     cachedCells = { ...initial }
 
     const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
-      containerTotalNum: 7,
+      containerTotalNum: 8,
       textObject: [
         makeContainer(1, 'l1',   0,      L1_Y,   LEFT_W,   ROW_H,  initial.l1,   1),
         makeContainer(2, 'l2',   0,      L2_Y,   LEFT_W,   ROW_H,  initial.l2,   0),
@@ -465,6 +476,7 @@ async function main(): Promise<void> {
         makeContainer(5, 'pb',   0,      PACE_Y, CANVAS_W, PACE_H, initial.pb,   0),
         makeContainer(6, 'pu',   UNIT_X, UNIT_Y, UNIT_W,   ROW_H,  initial.pu,   0),
         makeContainer(7, 'mo',   MODAL_X, MODAL_Y, MODAL_W, MODAL_H, initial.mo, 0),
+        makeContainer(8, 'lap',  0,      0,      CANVAS_W, CANVAS_H, initial.lap, 0),
       ],
     }))
 
@@ -517,6 +529,21 @@ async function main(): Promise<void> {
         return
       }
 
+      // Lap-list screen intercepts all gestures while open
+      if (lapView) {
+        const maxOffset = Math.max(0, (state.laps.length + 1) - 8)
+        if (type === OsEventTypeList.SCROLL_TOP_EVENT) {
+          lapScrollOffset = Math.min(maxOffset, lapScrollOffset + 1)   // scroll to older
+        } else if (type === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+          if (lapScrollOffset <= 0) lapView = false                    // at newest → close
+          else lapScrollOffset -= 1                                    // scroll to newer
+        } else {
+          lapView = false                                             // tap / double-tap closes
+        }
+        await flushHUD()
+        return
+      }
+
       switch (type) {
 
         // Single tap: start (idle) | lap (running) | resume (paused)
@@ -548,6 +575,16 @@ async function main(): Promise<void> {
             await b.shutDownPageContainer(1)
           } else {
             hudModal = { type: 'stop', sel: 0 }
+            await flushHUD()
+          }
+          break
+        }
+
+        // Swipe up: open the scrollable lap-list screen (while a run is active)
+        case OsEventTypeList.SCROLL_TOP_EVENT: {
+          if (state.status !== 'idle') {
+            lapView = true
+            lapScrollOffset = 0
             await flushHUD()
           }
           break

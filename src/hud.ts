@@ -17,9 +17,12 @@ export interface HudInput {
   status: RunStatus
   elapsedMs: number
   totalDistanceM: number
+  laps: { number: number, distanceM: number, elapsedMs: number }[]
   lapNumber: number
   lapDistanceM: number
   lapElapsedMs: number
+  lapView: boolean
+  lapScrollOffset: number
   paceSPerKm: number | null
   cadenceSpm: number | null
   segmentPaceSPerKm: number | null
@@ -45,9 +48,10 @@ export interface HUDCells {
   pb: string    // bottom big dot-matrix pace (multi-line)
   pu: string    // bottom pace unit "/km"
   mo: string    // centre modal overlay (blank unless a modal is active)
+  lap: string   // full-screen lap list (blank unless the lap view is open)
 }
 
-export const CELL_KEYS: Array<keyof HUDCells> = ['l1', 'l2', 'l3', 'info', 'pb', 'pu', 'mo']
+export const CELL_KEYS: Array<keyof HUDCells> = ['l1', 'l2', 'l3', 'info', 'pb', 'pu', 'mo', 'lap']
 
 const BLANK = ' '
 
@@ -137,6 +141,7 @@ function renderBaseCells(h: HudInput): HUDCells {
       pb: bigText(paceStr),
       pu: '/km',
       mo: BLANK,
+      lap: BLANK,
     }
   }
 
@@ -146,7 +151,7 @@ function renderBaseCells(h: HudInput): HUDCells {
 
   let l2 = `CAD ${cadStr}`
   if (h.showSteps) l2 += `  ${h.totalSteps}stp`
-  let l3 = `SEG ${segStr}/km  L${h.lapNumber}  ${gpsStr}`
+  let l3 = `SEG ${segStr}/km  L${h.lapNumber}  ${gpsStr}  ↑laps`
 
   return {
     l1: `${fmtElapsed(h.elapsedMs)}   ${distKm}km`,
@@ -156,24 +161,59 @@ function renderBaseCells(h: HudInput): HUDCells {
     pb: bigText(paceStr),
     pu: '/km',
     mo: BLANK,
+    lap: BLANK,
   }
+}
+
+// Full-screen lap list. Newest at the bottom; offset scrolls towards older laps.
+const LAP_MAX_LINES = 8
+function lapScreen(h: HudInput): string {
+  const lines: string[] = []
+  for (const l of h.laps) {
+    const km = (l.distanceM / 1000).toFixed(2)
+    const pace = l.distanceM > 0
+      ? fmtPace((l.elapsedMs / 1000) / (l.distanceM / 1000))
+      : '-:--'
+    lines.push(`L${l.number}  ${km}km  ${fmtElapsed(l.elapsedMs)}  ${pace}/km`)
+  }
+  // in-progress current lap
+  const ckm = (h.lapDistanceM / 1000).toFixed(2)
+  lines.push(`L${h.lapNumber}* ${ckm}km  ${fmtElapsed(h.lapElapsedMs)}`)
+
+  const maxOffset = Math.max(0, lines.length - LAP_MAX_LINES)
+  const offset = Math.min(Math.max(0, h.lapScrollOffset), maxOffset)
+  const end = lines.length - offset
+  const start = Math.max(0, end - LAP_MAX_LINES)
+  const visible = lines.slice(start, end)
+
+  const header = lines.length > LAP_MAX_LINES
+    ? `LAPS  ${start + 1}-${end}/${lines.length}  ↑↓scroll tap=close`
+    : `LAPS  swipe=scroll  tap=close`
+  return [header, ...visible].join('\n')
+}
+
+function blankAll(cells: HUDCells): void {
+  cells.l1 = BLANK; cells.l2 = BLANK; cells.l3 = BLANK
+  cells.info = BLANK; cells.pb = BLANK; cells.pu = BLANK
 }
 
 export function renderHUD(h: HudInput): HUDCells {
   const cells = renderBaseCells(h)
 
+  // Stop menu takes priority over the lap view.
   const m = h.modal
   if (m.type === 'stop') {
-    // Full-screen takeover: blank everything, show the 3 options centred.
-    cells.l1 = BLANK
-    cells.l2 = BLANK
-    cells.l3 = BLANK
-    cells.info = BLANK
-    cells.pb = BLANK
-    cells.pu = BLANK
-
+    blankAll(cells)
+    cells.lap = BLANK
     const opts = ['Save + exit', 'Discard', 'Continue']
     cells.mo = opts.map((o, i) => (i === m.sel ? `> ${o} <` : `  ${o}  `)).join('\n')
+    return cells
+  }
+
+  if (h.lapView) {
+    blankAll(cells)
+    cells.mo = BLANK
+    cells.lap = lapScreen(h)
   }
 
   return cells
