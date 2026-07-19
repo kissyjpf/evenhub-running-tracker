@@ -19,22 +19,38 @@ import { harvestCalibRecord } from './calibration/harvest'
 import type { RunSample } from './calibration/harvest'
 import { renderHUD, HUDCells, CELL_KEYS, type HudModal } from './hud'
 import { renderSettingsUI } from './settings/ui'
+import { fetchWeather, type WeatherInfo } from './weather'
 import { DEFAULT_SETTINGS } from './types'
 
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 const CANVAS_W  = 576
 const CANVAS_H  = 288
 const ROW_H     = 28
-const SIDE_W    = 130
-const CENTER_W  = CANVAS_W - SIDE_W * 2   // 316
 
-const ROW1_Y    = ROW_H                   // 28 (2nd row)
-const ROW2_Y    = ROW_H * 2               // 56 (3rd row)
-const BOT_Y     = ROW_H * 4               // 112 (1 line gap below CAD)
+// Left column (elapsed+dist / cadence / segment+lap+gps)
+const LEFT_W    = 360
+const L1_Y      = 0
+const L2_Y      = ROW_H          // 28
+const L3_Y      = ROW_H * 2      // 56
 
-const MODAL_Y1  = Math.round(CANVAS_H / 2) - Math.round(ROW_H * 1.5)
-const MODAL_Y2  = Math.round((CANVAS_H - ROW_H) / 2)
-const MODAL_Y3  = Math.round(CANVAS_H / 2) + Math.round(ROW_H * 0.5)
+// Top-right info block (clock / weather / compass / battery)
+const INFO_X    = 372
+const INFO_W    = CANVAS_W - INFO_X   // 204
+const INFO_Y    = 0
+const INFO_H    = ROW_H * 4      // 112
+
+// Bottom large dot-matrix pace + unit
+const PACE_Y    = 140
+const PACE_H    = CANVAS_H - PACE_Y   // 148 (fits 5 dot rows)
+const UNIT_X    = 470
+const UNIT_Y    = 252
+const UNIT_W    = CANVAS_W - UNIT_X
+
+// Centre modal overlay
+const MODAL_X   = 130
+const MODAL_Y   = 116
+const MODAL_W   = 320
+const MODAL_H   = ROW_H * 3      // 84
 
 // ── Module-level singletons ──────────────────────────────────────────────────
 const state   = makeInitialState()
@@ -69,10 +85,15 @@ function makeContainer(
   })
 }
 
-let cachedCells: HUDCells = { tl:'', tc:'', tr:'', ca:'', mo1:'', mo2:'', mo3:'', bot:'' }
+let cachedCells: HUDCells = { l1:'', l2:'', l3:'', info:'', pb:'', pu:'', mo:'' }
 let bridge: Bridge | null = null
 let hudModal: HudModal = { type: 'none' }
-let lapScrollOffset = 0
+
+// Top-right info block sources
+let weather: WeatherInfo | null = null
+let glassesBatteryPct: number | null = null
+let glassesSn: string | null = null
+let lastHeadingDeg: number | null = null
 
 async function flushHUD(): Promise<void> {
   if (!bridge) return
@@ -113,12 +134,12 @@ function buildHudInput() {
   const lp = state.lastPace
   const weightKg = state.settings.weight_kg ?? 65
   const calories = (state.totalDistanceM / 1000) * weightKg * 1.036
+  const now = new Date()
+  const clock = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   return {
     status:              state.status,
     elapsedMs:           activeElapsedMs(state),
     totalDistanceM:      state.totalDistanceM,
-    laps:                state.laps,
-    lapScrollOffset,
     lapNumber:           state.laps.length + 1,
     lapDistanceM:        lapDistanceM(state),
     lapElapsedMs:        lapElapsedMs(state),
@@ -132,6 +153,10 @@ function buildHudInput() {
     showSteps:           state.settings.showSteps,
     showCalories:        state.settings.showCalories,
     gpsAccuracyM:        sensors.gps.lastAccuracyM,
+    clock,
+    weather,
+    headingDeg:          lastHeadingDeg,
+    glassesBatteryPct,
     modal:               hudModal,
   }
 }
@@ -272,9 +297,8 @@ function startRun(): void {
   state.runSamples         = []
   pendingDistM             = 0
   totalStepEst             = 0
-  lapScrollOffset          = 0
   pace.resetEma()
-  
+
   if (state.settings.useWakeLock) {
     requestWakeLock()
   }
@@ -318,9 +342,8 @@ function discardRun(): void {
   state.runSamples        = []
   pendingDistM            = 0
   totalStepEst            = 0
-  lapScrollOffset         = 0
   pace.resetEma()
-  
+
   releaseWakeLock()
 }
 
@@ -365,6 +388,22 @@ function renderSettings(b: Bridge): void {
   })
 }
 
+// ── Weather ────────────────────────────────────────────────────────────────────
+let weatherBusy = false
+async function refreshWeather(): Promise<void> {
+  if (weatherBusy || lastGpsFix === null) return
+  weatherBusy = true
+  try {
+    const w = await fetchWeather(lastGpsFix.lat, lastGpsFix.lon)
+    if (w !== null) {
+      weather = w
+      flushHUD().catch(console.error)
+    }
+  } finally {
+    weatherBusy = false
+  }
+}
+
 // ── Phone screen helpers ──────────────────────────────────────────────────────
 function setStatus(html: string): void {
   const el = document.getElementById('app-status')
@@ -379,35 +418,53 @@ async function main(): Promise<void> {
 
     await loadAll(b)
 
-    // GPS: accumulate distance between ticks
+    // GPS: accumulate distance between ticks + capture heading for the compass
     sensors.onGps(fix => {
       const spd = fix.speedMs
       if (spd !== null && spd >= 0) {
         gpsSpeedBuf.push(spd)
         if (gpsSpeedBuf.length > 10) gpsSpeedBuf.shift()
       }
+      if (fix.headingDeg !== null) lastHeadingDeg = fix.headingDeg
       if (state.status === 'running' && lastGpsFix !== null) {
         pendingDistM += haversineM(lastGpsFix, fix)
       }
+      const firstFix = lastGpsFix === null
       lastGpsFix = fix
+      if (firstFix) refreshWeather()   // kick off weather once we have a location
     })
     await sensors.initGps(b)
+
+    // Glasses battery: initial read + subscribe to status updates
+    b.getDeviceInfo().then(di => {
+      if (di?.isGlasses()) {
+        glassesSn = di.sn
+        if (typeof di.status.batteryLevel === 'number') glassesBatteryPct = di.status.batteryLevel
+      }
+    }).catch(() => {})
+    b.onDeviceStatusChanged(st => {
+      if ((glassesSn === null || st.sn === glassesSn) && typeof st.batteryLevel === 'number') {
+        glassesBatteryPct = st.batteryLevel
+      }
+    })
+
+    // Weather refresh every 10 min (also fired on first GPS fix above)
+    setInterval(refreshWeather, 10 * 60 * 1000)
 
     // Build initial HUD
     const initial = renderHUD(buildHudInput())
     cachedCells = { ...initial }
 
     const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
-      containerTotalNum: 8,
+      containerTotalNum: 7,
       textObject: [
-        makeContainer(1, 'tl', 0,                 ROW1_Y,  SIDE_W,   ROW_H, initial.tl, 1),
-        makeContainer(2, 'tc', SIDE_W,             ROW1_Y,  CENTER_W, ROW_H, initial.tc, 0),
-        makeContainer(3, 'tr', CANVAS_W - SIDE_W, ROW1_Y,  SIDE_W,   ROW_H, initial.tr, 0),
-        makeContainer(4, 'ca', 0,                 ROW2_Y,  CANVAS_W, ROW_H, initial.ca, 0),
-        makeContainer(5, 'mo1', 0,                MODAL_Y1, CANVAS_W, ROW_H, initial.mo1, 0),
-        makeContainer(6, 'mo2', 0,                MODAL_Y2, CANVAS_W, ROW_H, initial.mo2, 0),
-        makeContainer(7, 'mo3', 0,                MODAL_Y3, CANVAS_W, ROW_H, initial.mo3, 0),
-        makeContainer(8, 'bot', 0,                BOT_Y,   CANVAS_W, CANVAS_H - BOT_Y, initial.bot, 0),
+        makeContainer(1, 'l1',   0,      L1_Y,   LEFT_W,   ROW_H,  initial.l1,   1),
+        makeContainer(2, 'l2',   0,      L2_Y,   LEFT_W,   ROW_H,  initial.l2,   0),
+        makeContainer(3, 'l3',   0,      L3_Y,   LEFT_W,   ROW_H,  initial.l3,   0),
+        makeContainer(4, 'info', INFO_X, INFO_Y, INFO_W,   INFO_H, initial.info, 0),
+        makeContainer(5, 'pb',   0,      PACE_Y, CANVAS_W, PACE_H, initial.pb,   0),
+        makeContainer(6, 'pu',   UNIT_X, UNIT_Y, UNIT_W,   ROW_H,  initial.pu,   0),
+        makeContainer(7, 'mo',   MODAL_X, MODAL_Y, MODAL_W, MODAL_H, initial.mo, 0),
       ],
     }))
 
@@ -465,7 +522,7 @@ async function main(): Promise<void> {
         // Single tap: start (idle) | lap (running) | resume (paused)
         case OsEventTypeList.CLICK_EVENT: {
           if (state.status === 'idle') {
-            await flashCell('tc', '⋯')
+            await flashCell('l1', '⋯ starting')
             // First run: request DeviceMotion permission from user gesture
             if (sensors.path === 'g2imu') {
               const granted = await sensors.tryDeviceMotion()
@@ -474,7 +531,6 @@ async function main(): Promise<void> {
             startRun()
           } else if (state.status === 'running') {
             recordLap(state)
-            lapScrollOffset = 0
           } else if (state.status === 'paused') {
             if (state.pauseStart !== null) {
               state.pausedElapsed += Date.now() - state.pauseStart
@@ -494,23 +550,6 @@ async function main(): Promise<void> {
             hudModal = { type: 'stop', sel: 0 }
             await flushHUD()
           }
-          break
-        }
-
-        // Swipe up: scroll laps towards newer laps (down)
-        case OsEventTypeList.SCROLL_TOP_EVENT: {
-          lapScrollOffset = Math.max(0, lapScrollOffset - 1)
-          await flushHUD()
-          break
-        }
-
-        // Swipe down: scroll laps towards older laps (up)
-        case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
-          const MAX_LINES = 6
-          const allLinesCount = state.laps.length + 1
-          const maxOffset = Math.max(0, allLinesCount - MAX_LINES)
-          lapScrollOffset = Math.min(maxOffset, lapScrollOffset + 1)
-          await flushHUD()
           break
         }
       }

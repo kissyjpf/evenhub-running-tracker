@@ -26,6 +26,7 @@ export interface GpsFix {
   lon: number
   speedMs: number | null
   accuracyM: number
+  headingDeg: number | null   // course over ground (0-360); null when stationary/unknown
   ts: number
 }
 
@@ -117,6 +118,7 @@ export class GpsSensor {
       lat: loc.latitude,
       lon: loc.longitude,
       accuracyM,
+      headingDeg: typeof loc.heading === 'number' && loc.heading >= 0 ? loc.heading : null,
       ts,
       speedMs: null,
     }
@@ -139,6 +141,7 @@ export class GpsSensor {
       lat: c.latitude,
       lon: c.longitude,
       accuracyM: c.accuracy,
+      headingDeg: c.heading !== null && !isNaN(c.heading) ? c.heading : null,
       ts: pos.timestamp,
       speedMs: null,
     }

@@ -1,5 +1,11 @@
 // HUD renderer for Even G2 (576×288 mono green Micro-LED).
-// Three data lines: current pace | cadence | segment pace.
+// Layout:
+//   left column  — elapsed+distance / cadence+steps / segment+lap+gps
+//   top-right    — clock / weather / compass / glasses battery (4 lines)
+//   bottom       — large dot-matrix pace (the focal readout)
+//   centre       — stop-menu overlay (shown only during a modal)
+
+import type { WeatherInfo } from './weather'
 
 export type RunStatus = 'idle' | 'running' | 'paused'
 
@@ -11,8 +17,6 @@ export interface HudInput {
   status: RunStatus
   elapsedMs: number
   totalDistanceM: number
-  laps: { number: number, distanceM: number, elapsedMs: number }[]
-  lapScrollOffset: number
   lapNumber: number
   lapDistanceM: number
   lapElapsedMs: number
@@ -26,22 +30,28 @@ export interface HudInput {
   showSteps: boolean
   showCalories: boolean
   gpsAccuracyM?: number
+  clock: string                        // "12:34"
+  weather: WeatherInfo | null
+  headingDeg: number | null
+  glassesBatteryPct: number | null
   modal: HudModal
 }
 
 export interface HUDCells {
-  tl: string  // elapsed time
-  tc: string  // current pace — main focus
-  tr: string  // total distance
-  ca: string  // cadence + segment pace (full width, row 2)
-  mo1: string // modal option 1
-  mo2: string // modal option 2
-  mo3: string // modal option 3
-  bot: string // bottom row (lap + status + debug)
+  l1: string    // top-left row 1: elapsed + distance
+  l2: string    // top-left row 2: cadence + steps
+  l3: string    // top-left row 3: segment + lap + gps
+  info: string  // top-right 4-line block: clock / weather / compass / battery
+  pb: string    // bottom big dot-matrix pace (multi-line)
+  pu: string    // bottom pace unit "/km"
+  mo: string    // centre modal overlay (blank unless a modal is active)
 }
 
-export const CELL_KEYS: Array<keyof HUDCells> = ['tl', 'tc', 'tr', 'ca', 'mo1', 'mo2', 'mo3', 'bot']
+export const CELL_KEYS: Array<keyof HUDCells> = ['l1', 'l2', 'l3', 'info', 'pb', 'pu', 'mo']
 
+const BLANK = ' '
+
+// ── formatting helpers ────────────────────────────────────────────────────────
 function p2(n: number): string {
   return String(Math.floor(Math.abs(n))).padStart(2, '0')
 }
@@ -61,65 +71,91 @@ function fmtPace(sPerKm: number | null): string {
   return s === 60 ? `${m + 1}:00` : `${m}:${p2(s)}`
 }
 
+// ── 16-point compass ──────────────────────────────────────────────────────────
+const DIRS16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW']
+function compass16(deg: number | null): string {
+  if (deg === null || !isFinite(deg)) return '--'
+  const idx = Math.round((((deg % 360) + 360) % 360) / 22.5) % 16
+  return DIRS16[idx]!
+}
+
+// ── dot-matrix big font (5 rows) for pace digits ──────────────────────────────
+// '█' = lit dot. Change DOT here if the G2 font renders a different glyph better.
+const GLYPHS: Record<string, string[]> = {
+  '0': ['███', '█ █', '█ █', '█ █', '███'],
+  '1': [' █ ', '██ ', ' █ ', ' █ ', '███'],
+  '2': ['███', '  █', '███', '█  ', '███'],
+  '3': ['███', '  █', '███', '  █', '███'],
+  '4': ['█ █', '█ █', '███', '  █', '  █'],
+  '5': ['███', '█  ', '███', '  █', '███'],
+  '6': ['███', '█  ', '███', '█ █', '███'],
+  '7': ['███', '  █', '  █', '  █', '  █'],
+  '8': ['███', '█ █', '███', '█ █', '███'],
+  '9': ['███', '█ █', '███', '  █', '███'],
+  ':': [' ', '█', ' ', '█', ' '],
+  '-': ['   ', '   ', '███', '   ', '   '],
+  ' ': ['  ', '  ', '  ', '  ', '  '],
+}
+
+// Render a short string (pace like "5:30") as a 5-line dot-matrix block.
+function bigText(s: string): string {
+  const rows: string[] = []
+  for (let r = 0; r < 5; r++) {
+    rows.push([...s].map(ch => (GLYPHS[ch] ?? GLYPHS[' ']!)[r]).join(' '))
+  }
+  return rows.join('\n')
+}
+
+// ── top-right info block ──────────────────────────────────────────────────────
+function infoBlock(h: HudInput): string {
+  const w = h.weather
+  const wStr = w ? `${w.tempC}°C ${w.cond} ${w.humidity}%` : 'weather --'
+  const batt = h.glassesBatteryPct !== null ? `${h.glassesBatteryPct}` : '--'
+  return [
+    h.clock,
+    wStr,
+    compass16(h.headingDeg),
+    `G:${batt}%`,
+  ].join('\n')
+}
+
+// ── base HUD (no modal) ───────────────────────────────────────────────────────
 function renderBaseCells(h: HudInput): HUDCells {
-  const distKm = (h.totalDistanceM / 1000).toFixed(2)
+  const info = infoBlock(h)
+  const paceStr = fmtPace(h.paceSPerKm)
+  const gpsStr = (h.gpsAccuracyM ?? 999) < 30 ? 'GPS:OK' : 'GPS:--'
 
   if (h.status === 'idle') {
     const calStr = h.calibRecordCount > 0
-      ? `${h.calibRecordCount} records  k=${h.kValue.toFixed(2)}`
-      : 'no calibration — run to auto-calibrate'
-    const gpsStr = (h.gpsAccuracyM ?? 999) < 30 ? 'GPS:OK' : 'GPS:--'
+      ? `${h.calibRecordCount} recs k=${h.kValue.toFixed(2)}`
+      : 'no calib — run to learn'
     return {
-      tl: '00:00',
-      tc: 'READY',
-      tr: '0.00km',
-      ca: `${gpsStr}  •  ${calStr}`,
-      mo1: ' ', mo2: ' ', mo3: ' ',
-      bot: '○ tap=start  dbl=exit',
+      l1: 'READY',
+      l2: calStr,
+      l3: `${gpsStr}  tap=start  dbl=exit`,
+      info,
+      pb: bigText(paceStr),
+      pu: '/km',
+      mo: BLANK,
     }
   }
 
-  const paceStr = fmtPace(h.paceSPerKm)
-  const cadStr  = h.cadenceSpm !== null ? `${Math.round(h.cadenceSpm)}spm` : '--spm'
-  const segStr  = fmtPace(h.segmentPaceSPerKm)
-  const lapDistKm = (h.lapDistanceM / 1000).toFixed(2)
-  const icon    = h.status === 'running' ? '●' : '◐'
+  const distKm = (h.totalDistanceM / 1000).toFixed(2)
+  const cadStr = h.cadenceSpm !== null ? `${Math.round(h.cadenceSpm)}spm` : '--spm'
+  const segStr = fmtPace(h.segmentPaceSPerKm)
 
-  let cadPart = `CAD ${cadStr}`
-  if (h.showSteps) cadPart += `  ${h.totalSteps}stp`
-  let segPart = `SEG ${segStr}/km`
-  if (h.showCalories && h.calories > 0) segPart += `  ${Math.round(h.calories)}kcal`
-
-  let allLines: string[] = []
-
-  for (const l of h.laps) {
-    const lDist = (l.distanceM / 1000).toFixed(2)
-    allLines.push(`L${l.number}: ${lDist}km ${fmtElapsed(l.elapsedMs)}`)
-  }
-  allLines.push(`L${h.lapNumber}: ${lapDistKm}km ${fmtElapsed(h.lapElapsedMs)}  ${icon}  k=${h.kValue.toFixed(2)} c${h.calibRecordCount}`)
-
-  const MAX_LINES = 6
-  let offset = h.lapScrollOffset
-  const maxOffset = Math.max(0, allLines.length - MAX_LINES)
-  if (offset > maxOffset) offset = maxOffset
-  if (offset < 0) offset = 0
-
-  let visibleLines = allLines
-  if (allLines.length > MAX_LINES) {
-    const startIdx = allLines.length - MAX_LINES - offset
-    const endIdx = allLines.length - offset
-    visibleLines = allLines.slice(startIdx, endIdx)
-  }
-
-  const gpsStr = (h.gpsAccuracyM ?? 999) < 30 ? 'GPS:OK' : 'GPS:--'
+  let l2 = `CAD ${cadStr}`
+  if (h.showSteps) l2 += `  ${h.totalSteps}stp`
+  let l3 = `SEG ${segStr}/km  L${h.lapNumber}  ${gpsStr}`
 
   return {
-    tl: fmtElapsed(h.elapsedMs),
-    tc: `${paceStr}/km`,
-    tr: `${distKm}km`,
-    ca: `${gpsStr}  •  ${cadPart}  •  ${segPart}`,
-    mo1: ' ', mo2: ' ', mo3: ' ',
-    bot: visibleLines.join('\n'),
+    l1: `${fmtElapsed(h.elapsedMs)}   ${distKm}km`,
+    l2,
+    l3,
+    info,
+    pb: bigText(paceStr),
+    pu: '/km',
+    mo: BLANK,
   }
 }
 
@@ -128,17 +164,16 @@ export function renderHUD(h: HudInput): HUDCells {
 
   const m = h.modal
   if (m.type === 'stop') {
-    // Hide all normal HUD elements to show a "separate screen"
-    cells.tl = ' '
-    cells.tc = ' '
-    cells.tr = ' '
-    cells.ca = ' '
-    cells.bot = ' '
+    // Full-screen takeover: blank everything, show the 3 options centred.
+    cells.l1 = BLANK
+    cells.l2 = BLANK
+    cells.l3 = BLANK
+    cells.info = BLANK
+    cells.pb = BLANK
+    cells.pu = BLANK
 
     const opts = ['Save + exit', 'Discard', 'Continue']
-    cells.mo1 = m.sel === 0 ? `> ${opts[0]} <` : `  ${opts[0]}  `
-    cells.mo2 = m.sel === 1 ? `> ${opts[1]} <` : `  ${opts[1]}  `
-    cells.mo3 = m.sel === 2 ? `> ${opts[2]} <` : `  ${opts[2]}  `
+    cells.mo = opts.map((o, i) => (i === m.sel ? `> ${o} <` : `  ${o}  `)).join('\n')
   }
 
   return cells
