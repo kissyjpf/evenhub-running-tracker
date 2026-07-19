@@ -391,7 +391,7 @@ async function main(): Promise<void> {
       }
       lastGpsFix = fix
     })
-    sensors.initGps()
+    await sensors.initGps(b)
 
     // Build initial HUD
     const initial = renderHUD(buildHudInput())

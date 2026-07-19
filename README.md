@@ -16,6 +16,9 @@ Supports both **running and walking** (cadence detection down to ~50 spm).
 - **Real-time pace on the HUD** — complementary filter fusing GPS speed with
   accelerometer dead reckoning. When GPS accuracy drops (≥30 m), distance keeps
   advancing from the estimated speed so the run doesn't stall in tunnels/under cover.
+- **Native location** — GPS comes from the EvenHub **App Location API** (bridge),
+  purpose-built for the Even App WebView; it falls back to browser geolocation
+  automatically when the native path isn't available (e.g. the simulator).
 - **Cadence & step count** — steps per minute from the DeviceMotion API (phone,
   accelerometer + gyroscope fusion) or the G2 IMU, via autocorrelation with an
   adaptively-measured sample rate and half-lag harmonic correction.
@@ -128,7 +131,9 @@ pace    = EMA(1000 / v_fused, τ = 4 s)
 ```
 
 Distance accumulates from GPS haversine when accuracy < 30 m, otherwise from the fused
-speed (dead reckoning).
+speed (dead reckoning). Location fixes are sourced from the native EvenHub App Location
+API (`startAppLocationUpdates` / `onAppLocationChanged`, High accuracy, 1 s interval),
+with browser `navigator.geolocation` as an automatic fallback.
 
 ### Calibration acceptance gate
 
@@ -175,7 +180,7 @@ src/
     manager.ts         # sensor orchestration + cadence freshness
     device-motion.ts   # DeviceMotion cadence (adaptive rate, accel + gyro fusion)
     g2-imu.ts          # G2 IMU cadence (adaptive sample rate)
-    gps.ts             # GPS haversine distance / speed
+    gps.ts             # native App Location (bridge) + browser-geolocation fallback
   model/
     l-base.ts          # step-length lookup from calibration records
     k-scalar.ts        # adaptive GPS correction scalar

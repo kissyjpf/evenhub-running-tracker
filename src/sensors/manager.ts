@@ -1,6 +1,6 @@
 // Sensor manager: DeviceMotion (A) → G2 IMU (B) → GPS-only (C) fallback chain.
 
-import { GpsSensor, GpsFix } from './gps'
+import { GpsSensor, GpsFix, LocationBridge } from './gps'
 import { DeviceMotionSensor } from './device-motion'
 import { G2ImuSensor, ImuRaw } from './g2-imu'
 import type { SensorPath } from '../types'
@@ -35,8 +35,9 @@ export class SensorManager {
     return this.lastCadenceSpm
   }
 
-  initGps(): boolean {
-    return this.gps.start(fix => this._gpsCb?.(fix))
+  /** Pass the bridge to use native App Location; null forces browser geolocation. */
+  async initGps(bridge: LocationBridge | null): Promise<boolean> {
+    return this.gps.start(bridge, fix => this._gpsCb?.(fix))
   }
 
   /** Call from a user-gesture handler so iOS permission prompt can fire. */
