@@ -45,7 +45,7 @@ export interface HUDCells {
   l2: string    // top-left row 2: cadence + steps
   l3: string    // top-left row 3: segment + lap + gps
   info: string  // top-right 4-line block: clock / weather / compass / battery
-  pb: string    // bottom big dot-matrix pace (multi-line)
+  pb: string    // plain pace string ("5:30"); drawn as a dot-matrix image, not text
   pu: string    // bottom pace unit "/km"
   mo: string    // centre modal overlay (blank unless a modal is active)
   lap: string   // full-screen lap list (blank unless the lap view is open)
@@ -83,32 +83,11 @@ function compass16(deg: number | null): string {
   return DIRS16[idx]!
 }
 
-// ── dot-matrix big font (5 rows) for pace digits ──────────────────────────────
-// '█' = lit dot. Change DOT here if the G2 font renders a different glyph better.
-const GLYPHS: Record<string, string[]> = {
-  '0': ['███', '█ █', '█ █', '█ █', '███'],
-  '1': [' █ ', '██ ', ' █ ', ' █ ', '███'],
-  '2': ['███', '  █', '███', '█  ', '███'],
-  '3': ['███', '  █', '███', '  █', '███'],
-  '4': ['█ █', '█ █', '███', '  █', '  █'],
-  '5': ['███', '█  ', '███', '  █', '███'],
-  '6': ['███', '█  ', '███', '█ █', '███'],
-  '7': ['███', '  █', '  █', '  █', '  █'],
-  '8': ['███', '█ █', '███', '█ █', '███'],
-  '9': ['███', '█ █', '███', '  █', '███'],
-  ':': [' ', '█', ' ', '█', ' '],
-  '-': ['   ', '   ', '███', '   ', '   '],
-  ' ': ['  ', '  ', '  ', '  ', '  '],
-}
-
-// Render a short string (pace like "5:30") as a 5-line dot-matrix block.
-function bigText(s: string): string {
-  const rows: string[] = []
-  for (let r = 0; r < 5; r++) {
-    rows.push([...s].map(ch => (GLYPHS[ch] ?? GLYPHS[' ']!)[r]).join(' '))
-  }
-  return rows.join('\n')
-}
+// The large pace readout is no longer tiled from text — the fixed base font is
+// too coarse. `cells.pb` now carries the plain pace string (e.g. "5:30"); main.ts
+// rasterises it into a fine dot-matrix bitmap and pushes it to an image
+// container. See paceImage.ts. A blank string clears the image.
+export { fmtPace }
 
 // ── top-right info block ──────────────────────────────────────────────────────
 function infoBlock(h: HudInput): string {
@@ -138,7 +117,7 @@ function renderBaseCells(h: HudInput): HUDCells {
       l2: calStr,
       l3: `${gpsStr}  tap=start  dbl=exit`,
       info,
-      pb: bigText(paceStr),
+      pb: paceStr,
       pu: '/km',
       mo: BLANK,
       lap: BLANK,
@@ -158,7 +137,7 @@ function renderBaseCells(h: HudInput): HUDCells {
     l2,
     l3,
     info,
-    pb: bigText(paceStr),
+    pb: paceStr,
     pu: '/km',
     mo: BLANK,
     lap: BLANK,
