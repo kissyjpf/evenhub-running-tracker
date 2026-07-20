@@ -6,7 +6,20 @@ import {
   TextContainerUpgrade,
   CreateStartUpPageContainer,
   StartUpPageCreateResult,
+  ImageContainerProperty,
+  ImageRawDataUpdate,
+  ImageRawDataUpdateResult,
 } from '@evenrealities/even_hub_sdk'
+import {
+  renderPacePng, renderPaceGray, renderPaceText,
+  PACE_IMG_W, PACE_IMG_H, PACE_IMG_GRAY4_BYTES,
+} from './paceImage'
+
+// Set false to fall back to a tiled-text pace readout over the text channel.
+// (Image frames were suspected of wedging the link, but text fails at the same
+// point with images disabled entirely — the link itself drops.)
+const USE_PACE_IMAGE = true
+import { installDebugLog } from './debugLog'
 
 import { makeInitialState, activeElapsedMs, lapElapsedMs, lapDistanceM, recordLap } from './state'
 import type { AppState } from './state'
@@ -15,6 +28,7 @@ import { haversineM } from './sensors/gps'
 import type { GpsFix } from './sensors/gps'
 import { PaceEstimator } from './pace'
 import { loadRecords, saveRecords, insertRecord } from './calibration/records'
+import { loadRuns, saveRuns, insertRun } from './runs'
 import { harvestCalibRecord } from './calibration/harvest'
 import type { RunSample } from './calibration/harvest'
 import { renderHUD, HUDCells, CELL_KEYS, type HudModal } from './hud'
@@ -39,9 +53,16 @@ const INFO_W    = CANVAS_W - INFO_X   // 204
 const INFO_Y    = 0
 const INFO_H    = ROW_H * 4      // 112
 
-// Bottom large dot-matrix pace + unit
-const PACE_Y    = 140
-const PACE_H    = CANVAS_H - PACE_Y   // 148 (fits 5 dot rows)
+// Bottom large pace readout — a dot-matrix bitmap in an image container (the
+// fixed base font is too coarse to tile a big number). Size must match the
+// PNG produced by paceImage.ts; SDK limits are width ≤288, height ≤144.
+const IMG_W     = PACE_IMG_W
+const IMG_H     = PACE_IMG_H
+const IMG_X     = Math.floor((CANVAS_W - IMG_W) / 2)   // centred horizontally
+const IMG_Y     = 140
+// Text-fallback geometry for the same readout (7 tiled rows).
+const PACE_TEXT_Y = 116
+const PACE_TEXT_H = CANVAS_H - PACE_TEXT_Y
 const UNIT_X    = 470
 const UNIT_Y    = 252
 const UNIT_W    = CANVAS_W - UNIT_X
@@ -97,26 +118,221 @@ let lapScrollOffset = 0
 let weather: WeatherInfo | null = null
 let glassesBatteryPct: number | null = null
 let glassesSn: string | null = null
+let glassesConnected = true    // assumed until a status update says otherwise
+let textUpgradeLogged: boolean | null = null
+let linkHealthy = true
+let textFails = 0
+const TEXT_FAILS_BEFORE_REBUILD = 3
 let lastHeadingDeg: number | null = null
 
 async function flushHUD(): Promise<void> {
-  if (!bridge) return
+  if (!bridge || !pageReady) return
   const h = buildHudInput()
   const cells = renderHUD(h)
 
   for (let i = 0; i < CELL_KEYS.length; i++) {
     const key = CELL_KEYS[i]!
+    if (key === 'pb' && USE_PACE_IMAGE) continue   // container 5 is an image
     if (cells[key] === cachedCells[key]) continue
     cachedCells[key] = cells[key]
-    await bridge.textContainerUpgrade(new TextContainerUpgrade({
+    // cells.pb carries the plain pace string; expand it to the block font here.
+    const content = key === 'pb' ? renderPaceText(cells[key]) : cells[key]
+    const ok = await bridge.textContainerUpgrade(new TextContainerUpgrade({
       containerID:   i + 1,
       containerName: key,
       contentOffset: 0,
       contentLength: 0,
-      content: cells[key],
-    })).catch(console.error)
+      content,
+    })).catch(e => { console.error(e); return false })
+    // Text upgrades also report failure by return value. Logging the first
+    // outcome distinguishes "the image API is broken" from "nothing reaches the
+    // glasses at all".
+    if (textUpgradeLogged !== ok) {
+      textUpgradeLogged = ok
+      console.info(`[link] textContainerUpgrade -> ${ok ? 'ok' : 'FAILED'} (${key})`)
+    }
+    // Text upgrades are the cheapest probe we have, so let them drive link
+    // health: pushing image frames into a dropped link is what piles up and
+    // takes the app down.
+    linkHealthy = ok
+    if (ok) {
+      textFails = 0
+      paceImgFails = 0
+      paceImgDisabled = false
+    } else if (++textFails >= TEXT_FAILS_BEFORE_REBUILD) {
+      // The link came back but the page went with it. Rebuild it rather than
+      // pushing updates at containers the glasses no longer have.
+      textFails = 0
+      pageReady = false
+      console.warn('[page] text upgrades failing — will rebuild the page')
+      return
+    }
+  }
+
+  if (USE_PACE_IMAGE) await updatePaceImage(cells.pb)
+}
+
+// Push the big pace readout as a block dot-matrix bitmap. Image frames are slow
+// over BLE, so: never overlap two sends, and leave a gap between them so text
+// upgrades still get through. A deferred value is picked up by the next flush.
+const PACE_IMG_MIN_INTERVAL_MS = 5000
+let lastPaceImg = ''
+let paceImgSending = false
+let lastPaceImgAt = 0
+let paceImgLogged = false   // log the first successful frame only, not every 5 s
+let paceImgFails = 0
+let paceImgLinkWarned = false
+let paceImgDisabled = false
+
+// The docs say imageData may be a base64 PNG or raw greyscale bytes, but this
+// host only accepts raw greyscale — PNG comes back sendFailed. Probe greyscale
+// first so a rejected PNG doesn't burn a send every cycle, and keep whichever
+// format the glasses take.
+type PaceImgFormat = 'png' | 'gray'
+let paceImgFormat: PaceImgFormat | null = null
+
+async function sendPaceFrame(text: string, fmt: PaceImgFormat): Promise<unknown> {
+  const data = fmt === 'png' ? renderPacePng(text) : renderPaceGray(text)
+  if (data === null) return null
+  return bridge!.updateImageRawData(new ImageRawDataUpdate({
+    containerID: 5, containerName: 'pb', imageData: data,
+  }))
+}
+
+// Failed frames appear to pile up host-side (the app dies after enough of them),
+// so stop issuing them rather than retrying forever.
+const PACE_IMG_MAX_FAILS = 5
+
+async function updatePaceImage(text: string): Promise<void> {
+  if (!bridge || paceImgSending || text === lastPaceImg) return
+  if (paceImgDisabled) return
+  if (Date.now() - lastPaceImgAt < PACE_IMG_MIN_INTERVAL_MS) return
+  if (!glassesConnected || !linkHealthy) {
+    if (!paceImgLinkWarned) {
+      paceImgLinkWarned = true
+      console.warn('[paceImage] skipped — link down (text upgrades failing)')
+    }
+    return
+  }
+  paceImgLinkWarned = false
+
+  paceImgSending = true
+  const prev = lastPaceImg
+  lastPaceImg = text
+  try {
+    const order: PaceImgFormat[] = paceImgFormat ? [paceImgFormat] : ['gray', 'png']
+    let ok = false
+    for (const fmt of order) {
+      const res = await sendPaceFrame(text, fmt)
+      if (res === null) continue
+      // updateImageRawData reports failure via its return value, not by throwing
+      // — without checking it the image silently never appears.
+      if (ImageRawDataUpdateResult.isSuccess(res as never)) {
+        ok = true
+        if (paceImgFormat !== fmt) {
+          paceImgFormat = fmt
+          console.info(`[paceImage] format=${fmt} accepted`)
+        }
+        break
+      }
+      console.error(
+        `[paceImage] ${fmt} rejected: ${res} (${PACE_IMG_W}x${PACE_IMG_H}, ` +
+        `~${PACE_IMG_GRAY4_BYTES}B gray4 over BLE)`)
+    }
+
+    if (ok) {
+      paceImgFails = 0
+      if (!paceImgLogged) {
+        paceImgLogged = true
+        console.info(`[paceImage] ok "${text}" ${PACE_IMG_W}x${PACE_IMG_H}`)
+      }
+    } else {
+      lastPaceImg = prev   // retry this value later
+      paceImgFails++
+      console.error(`[paceImage] all formats failed (attempt ${paceImgFails})`)
+      if (paceImgFails >= PACE_IMG_MAX_FAILS) {
+        paceImgDisabled = true
+        console.error(
+          `[paceImage] giving up after ${paceImgFails} failures — no more frames ` +
+          `will be sent (queued transfers are what take the app down)`)
+      }
+    }
+  } catch (e) {
+    lastPaceImg = ''   // force a retry on the next flush
+    console.error('[paceImage] send threw:', e)
+  } finally {
+    // Back off after repeated failures so a dead link isn't hammered every 5 s.
+    lastPaceImgAt = Date.now() +
+      Math.min(paceImgFails, 6) * PACE_IMG_MIN_INTERVAL_MS
+    paceImgSending = false
   }
 }
+
+// ── HUD page creation ─────────────────────────────────────────────────────────
+// createStartUpPageContainer returns invalid(1) when there is no link yet, so
+// creation is retried until it succeeds instead of leaving a blank display.
+const PAGE_RETRY_MS = 5000
+let pageReady = false
+
+const PAGE_RESULT_NAMES: Record<number, string> = {
+  0: 'success', 1: 'invalid', 2: 'oversize', 3: 'outOfMemory',
+}
+
+async function ensurePage(b: Bridge): Promise<void> {
+  if (pageReady) return
+
+  const initial = renderHUD(buildHudInput())
+  cachedCells = { ...initial }
+
+  const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
+    containerTotalNum: 8,
+    textObject: [
+      makeContainer(1, 'l1',   0,      L1_Y,   LEFT_W,   ROW_H,  initial.l1,   1),
+      makeContainer(2, 'l2',   0,      L2_Y,   LEFT_W,   ROW_H,  initial.l2,   0),
+      makeContainer(3, 'l3',   0,      L3_Y,   LEFT_W,   ROW_H,  initial.l3,   0),
+      makeContainer(4, 'info', INFO_X, INFO_Y, INFO_W,   INFO_H, initial.info, 0),
+      makeContainer(6, 'pu',   UNIT_X, UNIT_Y, UNIT_W,   ROW_H,  initial.pu,   0),
+      makeContainer(7, 'mo',   MODAL_X, MODAL_Y, MODAL_W, MODAL_H, initial.mo, 0),
+      makeContainer(8, 'lap',  0,      0,      CANVAS_W, CANVAS_H, initial.lap, 0),
+      ...(USE_PACE_IMAGE ? [] : [
+        makeContainer(5, 'pb', 0, PACE_TEXT_Y, CANVAS_W, PACE_TEXT_H,
+          renderPaceText(initial.pb), 0),
+      ]),
+    ],
+    // Image data can't be sent during startup — declare an empty placeholder
+    // here and fill it with updatePaceImage() once the page exists.
+    imageObject: USE_PACE_IMAGE ? [
+      new ImageContainerProperty({
+        containerID: 5, containerName: 'pb',
+        xPosition: IMG_X, yPosition: IMG_Y,
+        width: IMG_W, height: IMG_H,
+      }),
+    ] : [],
+  })).catch(e => { console.error('[page] create threw:', e); return null })
+
+  if (result !== StartUpPageCreateResult.success) {
+    const name = typeof result === 'number' ? PAGE_RESULT_NAMES[result] ?? String(result) : result
+    if (!pageFailLogged) {
+      pageFailLogged = true
+      console.error(`[page] create failed: ${name} — retrying every ${PAGE_RETRY_MS / 1000}s ` +
+        `(usually means the glasses aren't connected yet)`)
+    }
+    return
+  }
+
+  pageReady = true
+  pageFailLogged = false
+  // A fresh page has empty containers, so force a full resend.
+  cachedCells = { l1:'', l2:'', l3:'', info:'', pb:'', pu:'', mo:'', lap:'' }
+  linkHealthy = true
+  paceImgDisabled = false
+  paceImgFails = 0
+  lastPaceImg = ''
+  console.info(`HUD containers created (5 = pace ${USE_PACE_IMAGE ? 'image' : 'text'})`)
+
+  await flushHUD()
+}
+let pageFailLogged = false
 
 // Immediately push a single cell to the glasses (bypasses cache).
 // Resets the cache entry so flushHUD always re-syncs that cell afterward.
@@ -239,12 +455,14 @@ function tick(): void {
 // ── Persistence helpers ───────────────────────────────────────────────────────
 async function persistAll(b: Bridge): Promise<void> {
   await saveRecords(async (k, v) => { await b.setLocalStorage(k, v) }, state.calibRecords).catch(console.error)
+  await saveRuns(async (k, v) => { await b.setLocalStorage(k, v) }, state.runs).catch(console.error)
   await b.setLocalStorage('k_scalar', String(pace.k.serialize())).catch(console.error)
   await b.setLocalStorage('settings_v1', JSON.stringify(state.settings)).catch(console.error)
 }
 
 async function loadAll(b: Bridge): Promise<void> {
   state.calibRecords = await loadRecords(k => b.getLocalStorage(k).catch(() => null))
+  state.runs = await loadRuns(k => b.getLocalStorage(k).catch(() => null))
 
   const kRaw = await b.getLocalStorage('k_scalar').catch(() => null)
   if (kRaw) {
@@ -314,7 +532,25 @@ function startRun(): void {
 }
 
 async function stopRun(b: Bridge): Promise<void> {
+  const elapsed = activeElapsedMs(state)
   state.status = 'idle'
+
+  // Keep the run itself — until now only the calibration sample survived a save,
+  // and the run was thrown away.
+  if (elapsed > 5000 && state.totalDistanceM > 10) {
+    const weightKg = state.settings.weight_kg ?? 65
+    state.runs = insertRun(state.runs, {
+      ts: state.startTime ?? Date.now(),
+      duration_ms: elapsed,
+      distance_m: state.totalDistanceM,
+      steps: Math.round(totalStepEst),
+      calories: (state.totalDistanceM / 1000) * weightKg * 1.036,
+      laps: state.laps.map(l => ({ ...l })),
+    })
+    console.log(`[runs] saved: ${(state.totalDistanceM / 1000).toFixed(2)}km in ${Math.round(elapsed / 1000)}s`)
+  } else {
+    console.log('[runs] not saved — run too short')
+  }
 
   // Auto-harvest calibration record from this run
   if (state.runSamples.length >= 2) {
@@ -385,7 +621,7 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
 function renderSettings(b: Bridge): void {
   const root = document.getElementById('settings-root')
   if (!root) return
-  renderSettingsUI(root, state.settings, state.calibRecords, {
+  renderSettingsUI(root, state.settings, state.calibRecords, state.runs, {
     onSettingsChange(s) {
       state.settings = s
       persistAll(b).catch(console.error)
@@ -393,6 +629,11 @@ function renderSettings(b: Bridge): void {
     },
     onRecordsChange(r) {
       state.calibRecords = r
+      persistAll(b).catch(console.error)
+      renderSettings(b)
+    },
+    onRunsChange(r) {
+      state.runs = r
       persistAll(b).catch(console.error)
       renderSettings(b)
     },
@@ -423,6 +664,8 @@ function setStatus(html: string): void {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
+  // Installed first so bridge/HUD startup logs land in the on-screen console.
+  installDebugLog()
   try {
     const b = await waitForEvenAppBridge()
     bridge = b
@@ -448,12 +691,30 @@ async function main(): Promise<void> {
 
     // Glasses battery: initial read + subscribe to status updates
     b.getDeviceInfo().then(di => {
+      // Authoritative read of the link, unlike the empty status events the host
+      // broadcasts. If this says no glasses, nothing we push can land.
+      console.info(
+        `[link] device: isGlasses=${di?.isGlasses()} sn="${di?.sn ?? ''}" ` +
+        `connectType=${di?.status?.connectType} battery=${di?.status?.batteryLevel} ` +
+        `isWearing=${di?.status?.isWearing} inCase=${di?.status?.isInCase}`)
       if (di?.isGlasses()) {
         glassesSn = di.sn
         if (typeof di.status.batteryLevel === 'number') glassesBatteryPct = di.status.batteryLevel
       }
-    }).catch(() => {})
+    }).catch(e => console.warn('[link] getDeviceInfo failed:', e))
     b.onDeviceStatusChanged(st => {
+      // Only status events that actually identify the glasses say anything about
+      // the link. The host also emits empty placeholders (sn "", battery 0,
+      // connectType "none"); treating those as a disconnect blocks image sends
+      // even though the link is fine.
+      const sn = st.sn ?? ''
+      if (sn !== '' && (glassesSn === null || sn === glassesSn)) {
+        const connected = !!st.connectType && st.connectType !== 'none'
+        if (connected !== glassesConnected) {
+          glassesConnected = connected
+          console.info(`[link] glasses ${connected ? 'connected' : 'DISCONNECTED'} (connectType=${st.connectType})`)
+        }
+      }
       if ((glassesSn === null || st.sn === glassesSn) && typeof st.batteryLevel === 'number') {
         glassesBatteryPct = st.batteryLevel
       }
@@ -462,27 +723,11 @@ async function main(): Promise<void> {
     // Weather refresh every 10 min (also fired on first GPS fix above)
     setInterval(refreshWeather, 10 * 60 * 1000)
 
-    // Build initial HUD
-    const initial = renderHUD(buildHudInput())
-    cachedCells = { ...initial }
-
-    const result = await b.createStartUpPageContainer(new CreateStartUpPageContainer({
-      containerTotalNum: 8,
-      textObject: [
-        makeContainer(1, 'l1',   0,      L1_Y,   LEFT_W,   ROW_H,  initial.l1,   1),
-        makeContainer(2, 'l2',   0,      L2_Y,   LEFT_W,   ROW_H,  initial.l2,   0),
-        makeContainer(3, 'l3',   0,      L3_Y,   LEFT_W,   ROW_H,  initial.l3,   0),
-        makeContainer(4, 'info', INFO_X, INFO_Y, INFO_W,   INFO_H, initial.info, 0),
-        makeContainer(5, 'pb',   0,      PACE_Y, CANVAS_W, PACE_H, initial.pb,   0),
-        makeContainer(6, 'pu',   UNIT_X, UNIT_Y, UNIT_W,   ROW_H,  initial.pu,   0),
-        makeContainer(7, 'mo',   MODAL_X, MODAL_Y, MODAL_W, MODAL_H, initial.mo, 0),
-        makeContainer(8, 'lap',  0,      0,      CANVAS_W, CANVAS_H, initial.lap, 0),
-      ],
-    }))
-
-    if (result !== StartUpPageCreateResult.success) {
-      console.error('HUD init failed:', result)
-    }
+    // Build the HUD page. Retries until it lands: creation fails outright when
+    // the glasses aren't connected yet (connectType=connectionFailed), and
+    // without a retry the app would show nothing until it was restarted.
+    await ensurePage(b)
+    setInterval(() => { void ensurePage(b) }, PAGE_RETRY_MS)
 
     // Try DeviceMotion; fall back to G2 IMU path
     const dmGranted = await sensors.tryDeviceMotion()
@@ -490,12 +735,29 @@ async function main(): Promise<void> {
       sensors.startG2Imu()
     }
 
-    // Start G2 IMU via SDK. ImuReportPace.Pxxx values are protocol pacing
-    // codes, NOT literal Hz — the real delivery rate is device-defined, so
-    // g2-imu.ts measures the actual rate from event timestamps rather than
-    // trusting this number. The pace code only nudges the host faster/slower.
+    // The glasses IMU stream (~5 samples/s) saturates the BLE link and starves
+    // the pace image transfer, so it stays off.
+    //
+    // Cost: when DeviceMotion is unavailable this is the only cadence source, so
+    // cadence reads "--spm" and pace falls back to GPS alone. Set this to true to
+    // trade the big pace readout back for cadence.
+    //
+    // ImuReportPace.Pxxx values are protocol pacing codes, NOT literal Hz — the
+    // real delivery rate is device-defined, so g2-imu.ts measures the actual rate
+    // from event timestamps rather than trusting this number.
+    // Turning this off did not change the image behaviour, so BLE contention was
+    // not the cause — the stream stays on and cadence keeps working.
+    const USE_GLASSES_IMU = true
     try {
-      await b.imuControl(true, ImuReportPace.P200)
+      if (USE_GLASSES_IMU && !dmGranted) {
+        await b.imuControl(true, ImuReportPace.P200)
+        console.info('[IMU] glasses stream on — DeviceMotion unavailable')
+      } else {
+        await b.imuControl(false)
+        console.info(dmGranted
+          ? '[IMU] glasses stream off — cadence from phone DeviceMotion'
+          : '[IMU] glasses stream off — no cadence source (pace is GPS-only)')
+      }
     } catch (e) {
       console.warn('[IMU] control failed (simulator mode):', e)
     }
@@ -553,7 +815,11 @@ async function main(): Promise<void> {
             // First run: request DeviceMotion permission from user gesture
             if (sensors.path === 'g2imu') {
               const granted = await sensors.tryDeviceMotion()
-              if (granted) console.log('[sensors] upgraded to DeviceMotion')
+              if (granted) {
+                console.log('[sensors] upgraded to DeviceMotion')
+                // Free the BLE link now that the glasses IMU is redundant.
+                await b.imuControl(false).catch(() => {})
+              }
             }
             startRun()
           } else if (state.status === 'running') {
