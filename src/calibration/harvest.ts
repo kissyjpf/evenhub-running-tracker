@@ -58,7 +58,23 @@ export function harvestCalibRecord(
 ): CalibRecord | null {
   if (allSamples.length < 2) return null
 
-  const fallbackRecord = (): CalibRecord => {
+  // A record exists to teach the model a step length, so one without steps or
+  // cadence teaches nothing and would drag the k-scalar toward zero. Reject
+  // those outright rather than storing them.
+  const usable = (r: CalibRecord): boolean => {
+    const why =
+      r.distance_m     <= 0    ? 'no distance'
+      : r.duration_ms  <= 0    ? 'no duration'
+      : r.steps        <= 0    ? 'no steps'
+      : r.cadence_spm  <= 0    ? 'no cadence'
+      : r.step_length_m < 0.3  ? `step length ${r.step_length_m.toFixed(3)}m too short`
+      : r.step_length_m > 2.5  ? `step length ${r.step_length_m.toFixed(3)}m too long`
+      : null
+    if (why !== null) console.log('[harvest] discarded:', why)
+    return why === null
+  }
+
+  const fallbackRecord = (): CalibRecord | null => {
     const first = allSamples[0]!
     const last = allSamples[allSamples.length - 1]!
     const distM = last.distM - first.distM
@@ -72,7 +88,7 @@ export function harvestCalibRecord(
     const avgAcc = allSamples.reduce((s, v) => s + v.gpsAccuracyM, 0) / allSamples.length
     const { cov: speedCov } = segSpeedStats(allSamples)
 
-    return {
+    const rec: CalibRecord = {
       ts: Date.now(),
       distance_m: distM,
       duration_ms: durationMs,
@@ -86,6 +102,7 @@ export function harvestCalibRecord(
       speed_cov: speedCov,
       edited: false,
     }
+    return usable(rec) ? rec : null
   }
 
   if (allSamples.length < 30) return fallbackRecord()
@@ -133,7 +150,7 @@ export function harvestCalibRecord(
     return fallbackRecord()
   }
 
-  return {
+  const rec: CalibRecord = {
     ts: Date.now(),
     distance_m: distM,
     duration_ms: durationMs,
@@ -147,4 +164,5 @@ export function harvestCalibRecord(
     speed_cov: speedCov,
     edited: false,
   }
+  return usable(rec) ? rec : null
 }
