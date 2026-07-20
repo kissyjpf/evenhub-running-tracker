@@ -1,13 +1,21 @@
 // Settings UI: rendered in the phone WebView.
 // Lets the user edit height/weight and calibration records.
 
-import type { CalibRecord, Settings } from '../types'
+import type { CalibRecord, RunRecord, Settings } from '../types'
 import { bandCoverage, editRecordManual, deleteRecord } from '../calibration/records'
+import { renderRunsUI } from './runsUi'
+import { mountDebugLog, unmountDebugLog } from '../debugLog'
 
 export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
   onRecordsChange(r: CalibRecord[]): void
+  onRunsChange(r: RunRecord[]): void
 }
+
+// Which screen the phone UI is showing. Module-level so a re-render (after an
+// edit or delete) keeps the user on the screen they were on.
+export type Screen = 'settings' | 'runs' | 'console'
+let screen: Screen = 'settings'
 
 const BAND_LABELS = ['>5:33 /km', '4:46-5:33', '4:10-4:45', '3:42-4:09', '<3:42 /km']
 
@@ -22,8 +30,48 @@ export function renderSettingsUI(
   root: HTMLElement,
   settings: Settings,
   records: CalibRecord[],
+  runs: RunRecord[],
   cb: SettingsCallbacks,
 ): void {
+  const tabs = `
+<style>
+  #settings-root * { box-sizing: border-box; }
+  .tabs { display:flex; gap:8px; max-width:480px; margin:0 auto; padding:12px 16px 0; }
+  .tabs button { flex:1; background:#1c1c1c; color:#999; border:1px solid #333;
+    border-radius:6px; padding:9px 0; font-size:14px; font-family:inherit; }
+  .tabs button.on { background:#123; color:#8cf; border-color:#468; }
+</style>
+<div class="tabs">
+  <button id="tab-settings" class="${screen === 'settings' ? 'on' : ''}">Settings</button>
+  <button id="tab-runs" class="${screen === 'runs' ? 'on' : ''}">Runs (${runs.length})</button>
+  <button id="tab-console" class="${screen === 'console' ? 'on' : ''}">Console</button>
+</div>
+<div id="screen-root"></div>`
+
+  root.innerHTML = tabs
+  const host = root.querySelector<HTMLElement>('#screen-root')!
+  // Captured before `root` is reassigned to the screen host below, so a re-render
+  // replaces the whole panel instead of nesting a second tab bar inside it.
+  const outer = root
+  const go = (s: Screen) => { screen = s; renderSettingsUI(outer, settings, records, runs, cb) }
+  root.querySelector('#tab-settings')!.addEventListener('click', () => go('settings'))
+  root.querySelector('#tab-runs')!.addEventListener('click', () => go('runs'))
+  root.querySelector('#tab-console')!.addEventListener('click', () => go('console'))
+
+  // The console owns its own DOM, so it must be detached whenever we leave it.
+  if (screen !== 'console') unmountDebugLog()
+
+  if (screen === 'runs') {
+    renderRunsUI(host, runs, { onRunsChange: cb.onRunsChange })
+    return
+  }
+  if (screen === 'console') {
+    host.style.padding = '16px'
+    mountDebugLog(host)
+    return
+  }
+
+  root = host
   root.innerHTML = `
 <style>
   #settings-root * { box-sizing: border-box; }

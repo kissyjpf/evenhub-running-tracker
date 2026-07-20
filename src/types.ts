@@ -26,6 +26,16 @@ export interface CalibRecord {
   edited: boolean
 }
 
+// A completed run, kept for the history screen in the phone UI.
+export interface RunRecord {
+  ts: number            // start time (epoch ms)
+  duration_ms: number   // active time, excluding pauses
+  distance_m: number
+  steps: number
+  calories: number
+  laps: { number: number, distanceM: number, elapsedMs: number }[]
+}
+
 export interface Settings {
   height_cm: number
   weight_kg: number | null

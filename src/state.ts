@@ -1,4 +1,4 @@
-import type { CalibRecord, Settings } from './types'
+import type { CalibRecord, RunRecord, Settings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 import type { RunSample } from './calibration/harvest'
 import type { PaceResult } from './pace'
@@ -29,6 +29,7 @@ export interface AppState {
   runSamples: RunSample[]
 
   calibRecords: CalibRecord[]
+  runs: RunRecord[]
   settings: Settings
 }
 
@@ -46,6 +47,7 @@ export function makeInitialState(): AppState {
     segmentPaceSPerKm: null,
     runSamples: [],
     calibRecords: [],
+    runs: [],
     settings: { ...DEFAULT_SETTINGS },
   }
 }
