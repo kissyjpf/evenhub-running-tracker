@@ -11,6 +11,7 @@ const FS_MAX = 50
 const WINDOW_S = 9       // 9s window (adequate ACF resolution at ~10Hz)
 const UPDATE_MS = 1000
 const MA_LEN = 5         // ~0.5s moving average for DC removal
+const FS_WINDOW_N = 64   // timestamps kept for the sample-rate estimate
 
 export type ImuRaw = { x: number; y: number; z: number }
 export type CadenceCallback = (spm: number | null, vertAmp: number) => void
@@ -23,6 +24,8 @@ export class G2ImuSensor {
   private readonly GRAV_INIT = 30   // 3s of slow init
   private lastUpdateMs = 0
   private lastFeedMs = 0            // wall-clock of previous feed
+  private tsRing: number[] = []     // recent feed timestamps, for rate measurement
+  private fsLogged = 0
   private fsEma = FS_INIT           // measured sample rate (EMA)
   private fsInit = false
   private callback: CadenceCallback | null = null
@@ -40,19 +43,30 @@ export class G2ImuSensor {
   feed(raw: ImuRaw): void {
     const { x, y, z } = raw
 
-    // Measure the real report rate rather than trusting a fixed 10Hz —
-    // a wrong fs scales cadence directly.
+    // Measure the real report rate rather than trusting a fixed 10Hz — a wrong
+    // fs scales cadence directly.
+    //
+    // Derive it from samples-per-elapsed-time over a window, NOT from an EMA of
+    // instantaneous 1/dt rates: the glasses deliver IMU events in bursts, and a
+    // single 1 ms gap reads as 1000 Hz. Averaging rates lets those spikes
+    // dominate (mean of 1/dt >> 1/mean dt), inflating fs and with it cadence.
     const tNow = Date.now()
-    if (this.lastFeedMs > 0) {
-      const dt = tNow - this.lastFeedMs
-      if (dt > 0 && dt < 1000) {
-        const inst = 1000 / dt
-        this.fsEma = this.fsInit ? 0.9 * this.fsEma + 0.1 * inst : inst
+    this.tsRing.push(tNow)
+    if (this.tsRing.length > FS_WINDOW_N) this.tsRing.shift()
+    if (this.tsRing.length >= 8) {
+      const span = this.tsRing[this.tsRing.length - 1]! - this.tsRing[0]!
+      if (span > 0) {
+        this.fsEma = ((this.tsRing.length - 1) * 1000) / span
         this.fsInit = true
       }
     }
     this.lastFeedMs = tNow
     const fs = Math.max(FS_MIN, Math.min(FS_MAX, this.fsEma))
+
+    if (this.fsInit && Math.abs(fs - this.fsLogged) > 1) {
+      this.fsLogged = fs
+      console.log(`[IMU] measured report rate ${fs.toFixed(1)} Hz`)
+    }
 
     // Slow EMA for gravity estimation
     if (this.gravCount < this.GRAV_INIT) {
