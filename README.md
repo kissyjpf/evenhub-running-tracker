@@ -4,8 +4,8 @@
 
 Real-time pace, cadence, distance and a scrollable lap history are rendered directly on
 the glasses' 576×288 mono-green Micro-LED display — no phone glances needed during a run.
-The paired phone WebView is used only as a static settings panel (profile + calibration
-history).
+The paired phone WebView carries the settings panel, a saved-run history and an on-screen
+console for hardware debugging.
 
 Supports both **running and walking** (cadence detection down to ~50 spm).
 
@@ -24,24 +24,46 @@ Supports both **running and walking** (cadence detection down to ~50 spm).
   adaptively-measured sample rate and half-lag harmonic correction.
 - **Auto-calibration** — learns your step length per speed band from GPS during a run,
   auto-harvested at the end and persisted on-device across sessions.
+- **Large dot-matrix pace readout** — the focal number is drawn as a bitmap and pushed to
+  an image container, because text containers have a fixed font size and can't be scaled up.
 - **Scrollable lap history** — laps stack on the HUD; swipe to scroll through them.
+- **Saved run history** — completed runs are stored on-device (up to 50) and browsable on
+  the phone, with CSV export and delete.
+- **Link recovery** — the HUD page is rebuilt automatically when the glasses reconnect,
+  and updates stop while the link is down instead of piling up.
 - **On-glasses stop menu** — Save / Discard / Continue is confirmed on the HUD itself,
   so you never need the phone mid-run.
 - **Keep-screen-on (Wake Lock)** — optional; holds the screen awake so the run keeps
   running in the background, re-acquired automatically when the app returns to foreground.
 - **GPS status indicator** — `GPS:OK` / `GPS:--` on the HUD at a glance.
-- **Always-on settings panel** — height, weight, wake-lock toggle and calibration-record
-  management, shown on the phone WebView at all times.
+- **Always-on phone panel** — three tabs: Settings, Runs and Console.
 
 ## HUD Layout (576×288)
 
 ```
-y= 28   [ elapsed ]      [ pace /km ]        [ distance ]        ← top data row
-y= 56   [ GPS:OK  •  CAD ###spm ###stp  •  SEG #:##/km ###kcal ] ← row 2
-y=112   L1: 0.42km 2:31                                          ┐
-        L2: 0.40km 2:28                                          │ scrollable
-        …                                                        │ lap history
-        L4: 0.18km 1:05  ●  k=1.00 c3   (current lap)            ┘ (up to 6 lines)
+        ┌───────────────────────────────────┬──────────────┐
+y=  0   │ 12:34   2.00km                    │ 12:34        │ ← clock
+y= 28   │ CAD 180spm  2431stp               │ 21°C Sun 40% │ ← weather
+y= 56   │ SEG 5:12/km  L3  GPS:OK  ↑laps    │ NNE          │ ← compass
+y= 84   │                                   │ G:85%        │ ← glasses battery
+        │                                   └──────────────┤
+y=140   │            ██  ██ ███  ██                        │ ┐ dot-matrix pace,
+        │            ██ ███ ███ ███                        │ ┘ drawn as a bitmap
+y=252   │                                            /km   │
+        └──────────────────────────────────────────────────┘
+```
+
+The pace readout is an **image container** (160×72, centred), not text: text containers
+render at a fixed font size, so a big number can only be produced as a bitmap. Falling
+back to tiled text is a one-line switch (`USE_PACE_IMAGE` in `main.ts`).
+
+### Lap history (full-screen, swipe to open)
+
+```
+LAPS  3-10/10  ↑↓scroll tap=close
+L3  1.00km  5:12  5:12/km
+L4  0.42km  2:31  5:59/km
+…
 ```
 
 ### Stop menu (running/paused, full-screen)
@@ -76,10 +98,11 @@ the centre; the selected one is marked with arrows:
 - **Discard** — ends the run without saving.
 - **Continue** — dismiss and keep running.
 
-## Settings Panel (phone WebView)
+## Phone Panel (WebView)
 
-Always visible; no gesture required. Provides:
+Always visible; no gesture required. Three tabs:
 
+### Settings
 - **Profile** — height (cm), optional weight (kg) for calorie estimation, and a
   **Keep Screen On (Wake Lock)** toggle.
 - **Speed band coverage** — how many calibration records fall in each pace band.
@@ -87,13 +110,35 @@ Always visible; no gesture required. Provides:
   step length and source, with editable distance/steps and delete. New records appear
   here immediately after a Save + exit.
 
+### Runs
+Saved runs (newest first, max 50), each card showing distance, duration, average pace,
+date, steps, calories and the full lap breakdown.
+
+- **Copy all (CSV)** — one row per run, laps flattened into a trailing field, ready to
+  paste into a spreadsheet. Clipboard access is unreliable in a WebView, so the CSV is
+  also placed in a selectable textarea.
+- **Delete** — per run, or all at once. Both confirm first.
+
+Runs shorter than 5 s or 10 m are not saved.
+
+### Console
+Mirrors `console.*` plus uncaught errors and promise rejections — there are no devtools
+on the phone, and this is how the link/image/cadence issues above are diagnosed.
+
+- Colour-coded by level, timestamped, repeats collapsed (`x12`), 300-line buffer
+- `copy` (selectable textarea), `imu` (unhide the high-rate IMU log spam, hidden by
+  default), `pause`, `clear`
+- Capture starts before the bridge connects, so startup logs are never lost
+
 ## Sensor Paths
 
 The app selects the best available sensor automatically:
 
 1. **DeviceMotion** (phone browser API) — preferred; gravity-removed vertical
    acceleration fused with gyroscope rotation rate.
-2. **G2 IMU** (SDK `imuControl`) — fallback via EvenHub `IMU_DATA_REPORT` events.
+2. **G2 IMU** (SDK `imuControl`) — fallback via EvenHub `IMU_DATA_REPORT` events. Only
+   enabled when DeviceMotion is unavailable: while DeviceMotion runs the G2 samples are
+   discarded anyway, and the stream occupies the BLE link continuously (~5/s).
 3. **GPS only** — pace from GPS speed alone when no motion data is available.
 
 > **Note on `ImuReportPace`:** the SDK's `Pxxx` values are *protocol pacing codes, not
@@ -106,9 +151,12 @@ The app selects the best available sensor automatically:
 Vertical acceleration (+ gyroscope) → band-pass filter (0.5–4.5 Hz) → autocorrelation
 over a sliding window. Key robustness measures:
 
-- **Adaptive sample rate** — the real event rate is measured per-event (EMA) and used for
-  both the filter cutoffs and the lag→spm conversion (a wrong rate would scale cadence
-  directly, e.g. reading a half-rate stream as double).
+- **Adaptive sample rate** — the real event rate is measured and used for both the filter
+  cutoffs and the lag→spm conversion, since a wrong rate scales cadence directly. It is
+  derived as *samples ÷ elapsed time* over a 64-sample window, **not** as an average of
+  instantaneous `1/dt` rates: the glasses deliver IMU events in bursts, and because
+  `mean(1/dt) ≫ 1/mean(dt)` a single 1 ms gap reads as 1000 Hz and drags the estimate up.
+  The measured rate is logged (`[IMU] measured report rate … Hz`).
 - **Parabolic peak interpolation** — sub-sample lag resolution removes the ~8–11 spm
   quantisation jitter you'd otherwise get at integer lags.
 - **Half-lag harmonic correction** — detects when the true step frequency is at half the
@@ -147,7 +195,10 @@ A record is harvested from a run's longest steady segment only when it passes al
 | Cadence SD         | < 5 spm                            |
 | Step length        | 0.3 – 2.2 m                        |
 
-If a run doesn't produce a record, the browser console logs the reason (`[harvest] …`).
+Records that would carry no information are discarded outright rather than stored — zero
+distance, duration, steps or cadence, or a step length outside 0.3–2.5 m. A calibration
+record exists to teach a step length, so a zero-step record would only drag the k-scalar
+down. The reason is logged (`[harvest] discarded: …`), as is a non-harvest (`[harvest] …`).
 
 ## Requirements
 
@@ -170,8 +221,11 @@ npm run build    # bump version, tsc, vite build, and pack running-tracker.ehpk
 
 ```
 src/
-  main.ts              # entry point: bridge init, HUD containers, gesture routing, run lifecycle, wake lock
+  main.ts              # entry point: bridge init, HUD page build/retry, gesture routing, run lifecycle, wake lock
   hud.ts               # HUD cell renderer (data rows, scrollable lap history, stop menu)
+  paceImage.ts         # big pace readout as a dot-matrix bitmap (+ tiled-text fallback)
+  runs.ts              # saved-run storage, CSV export
+  debugLog.ts          # on-screen console (console.* capture + mountable panel)
   pace.ts              # complementary-filter pace estimator
   signal.ts            # band-pass IIR filter + autocorrelation cadence estimation
   state.ts             # app state (run lifecycle, laps)
@@ -189,8 +243,28 @@ src/
     records.ts         # persistence (load/save to on-device storage)
     gate.ts            # quality gate for calibration acceptance
   settings/
-    ui.ts              # always-on phone settings panel renderer
+    ui.ts              # phone panel shell: tab switching + settings screen
+    runsUi.ts          # run history screen (cards, CSV copy, delete)
 ```
+
+## Notes on the Glasses Link
+
+Hard-won details that are easy to trip over:
+
+- **`updateImageRawData` reports failure by return value, not by throwing.** An unchecked
+  call fails silently and the image simply never appears.
+- **`textContainerUpgrade` likewise returns a boolean.** It doubles as the cheapest link
+  health probe, and drives both the image gating and the page rebuild.
+- **Image payload is not the PNG size.** The phone decodes the image and pushes
+  `width × height ÷ 2` bytes of 4-bit greyscale over BLE, so dimensions drive the cost:
+  288×132 is ~19 KB, 160×72 is ~5.8 KB.
+- **This host accepts raw greyscale (1 byte/px), not base64 PNG** — PNG comes back
+  `sendFailed`, despite the docs listing both. The app probes greyscale first and keeps
+  whichever format is accepted.
+- **`createStartUpPageContainer` returns `invalid` when the glasses aren't connected**, so
+  page creation is retried every 5 s rather than leaving a blank display forever.
+- **The host emits placeholder status events** (`sn: ""`, `battery: 0`,
+  `connectType: "none"`) that must not be mistaken for a disconnect.
 
 ## License
 
