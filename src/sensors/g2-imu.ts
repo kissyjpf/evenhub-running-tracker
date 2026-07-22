@@ -19,13 +19,18 @@ export type CadenceCallback = (spm: number | null, vertAmp: number) => void
 export class G2ImuSensor {
   private buf: number[] = []        // HP-filtered acceleration norm
   private maRing: number[] = []     // ring for moving-average DC removal
-  private gravEma = { x: 0, y: 0, z: 9.81 }
+  // Seeded from the first sample rather than a hard-coded 9.81: the G2 reports
+  // acceleration in g (|a| ≈ 1.0), so an m/s² seed is 10x off and decays over
+  // seconds — a transient that sits in the 9 s window and pegged cadence at the
+  // 200 spm clamp for the first ~10 s of every run.
+  private gravEma: { x: number, y: number, z: number } | null = null
   private gravCount = 0
-  private readonly GRAV_INIT = 30   // 3s of slow init
+  private readonly GRAV_WARMUP = 20   // samples dropped while gravity settles
   private lastUpdateMs = 0
   private lastFeedMs = 0            // wall-clock of previous feed
   private tsRing: number[] = []     // recent feed timestamps, for rate measurement
   private fsLogged = 0
+  private prevRaw: number | null = null   // previous raw estimate, for the agreement check
   private fsEma = FS_INIT           // measured sample rate (EMA)
   private fsInit = false
   private callback: CadenceCallback | null = null
@@ -68,26 +73,35 @@ export class G2ImuSensor {
       console.log(`[IMU] measured report rate ${fs.toFixed(1)} Hz`)
     }
 
-    // Slow EMA for gravity estimation
-    if (this.gravCount < this.GRAV_INIT) {
-      const α = 0.15
-      this.gravEma.x = (1 - α) * this.gravEma.x + α * x
-      this.gravEma.y = (1 - α) * this.gravEma.y + α * y
-      this.gravEma.z = (1 - α) * this.gravEma.z + α * z
-      this.gravCount++
-    }
+    // Gravity: seed from the first sample, then keep tracking it slowly. Freezing
+    // it after a fixed warm-up let head tilt leak into the "linear" signal for
+    // the rest of the run.
+    if (this.gravEma === null) this.gravEma = { x, y, z }
+    const g = this.gravEma
+    const α = this.gravCount < this.GRAV_WARMUP ? 0.25 : 0.01
+    g.x = (1 - α) * g.x + α * x
+    g.y = (1 - α) * g.y + α * y
+    g.z = (1 - α) * g.z + α * z
+    this.gravCount++
 
-    // Linear acceleration (gravity-removed)
-    const lx = x - this.gravEma.x
-    const ly = y - this.gravEma.y
-    const lz = z - this.gravEma.z
-    const norm = Math.sqrt(lx * lx + ly * ly + lz * lz)
+    // Drop the settling samples entirely — they are a decaying step, not gait,
+    // and the autocorrelation window would carry them for seconds.
+    if (this.gravCount <= this.GRAV_WARMUP) return
+
+    // Signed vertical acceleration = linear acceleration projected onto gravity.
+    // The magnitude |a| would rectify the waveform and double its fundamental,
+    // which reads as double cadence (or half, once it aliases past Nyquist).
+    const lx = x - g.x
+    const ly = y - g.y
+    const lz = z - g.z
+    const gMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z) || 1
+    const vert = (lx * g.x + ly * g.y + lz * g.z) / gMag
 
     // DC removal via moving-average subtraction
-    this.maRing.push(norm)
+    this.maRing.push(vert)
     if (this.maRing.length > MA_LEN) this.maRing.shift()
     const dc = this.maRing.reduce((a, b) => a + b, 0) / this.maRing.length
-    const hpVal = norm - dc
+    const hpVal = vert - dc
 
     this.buf.push(hpVal)
     const maxBuf = Math.ceil(fs * WINDOW_S)
@@ -96,8 +110,19 @@ export class G2ImuSensor {
     const now = tNow
     if (now - this.lastUpdateMs >= UPDATE_MS && this.buf.length >= fs * 3) {
       this.lastUpdateMs = now
-      const spm = estimateCadence(this.buf, fs)
+      const raw = estimateCadence(this.buf, fs)
       const amp = rmsAmplitude(this.buf)
+
+      // Require two consecutive estimates to agree before reporting. The window
+      // straddles the moment you start running, mixing stationary and gait data,
+      // and that one blended reading lands at the 200 spm clamp — which then
+      // leads the display EMA for several seconds. Waiting a beat costs ~1 s of
+      // latency at the start and removes the spike.
+      const agrees = raw !== null && this.prevRaw !== null &&
+        Math.abs(raw - this.prevRaw) <= 0.25 * Math.max(raw, this.prevRaw)
+      const spm = agrees ? raw : null
+      this.prevRaw = raw
+
       this.cadenceSpm = spm
       this.verticalAmp = amp
       this.callback?.(spm, amp)
