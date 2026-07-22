@@ -48,12 +48,16 @@ export class PaceEstimator {
     // Accelerometer-based speed
     const vAcc = cadenceSpm !== null ? (cadenceSpm / 60) * L : null
 
-    // Complementary fusion
+    // Fusion. With a good fix GPS is used alone unless the user opts into
+    // blending: measured against a Garmin over 10 km, GPS matched and the fused
+    // figure read ~30 s/km slow, because any error in the step-length model is
+    // injected at full weight and k can only trim it by ±15%.
+    // The motion estimate still carries the run whenever GPS is unusable.
     let vFused: number | null
-    if (gpsOk && gpsSpeedMs !== null && vAcc !== null) {
-      vFused = ALPHA_GPS * gpsSpeedMs + (1 - ALPHA_GPS) * vAcc
-    } else if (gpsOk && gpsSpeedMs !== null) {
-      vFused = gpsSpeedMs
+    if (gpsOk && gpsSpeedMs !== null) {
+      vFused = (settings.useMotionFusion && vAcc !== null)
+        ? ALPHA_GPS * gpsSpeedMs + (1 - ALPHA_GPS) * vAcc
+        : gpsSpeedMs
     } else {
       vFused = vAcc  // dead reckoning (k frozen automatically — no update called above)
     }

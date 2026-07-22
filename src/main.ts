@@ -35,6 +35,7 @@ import { renderHUD, HUDCells, CELL_KEYS, type HudModal } from './hud'
 import { renderSettingsUI } from './settings/ui'
 import { fetchWeather, type WeatherInfo } from './weather'
 import { DEFAULT_SETTINGS } from './types'
+import type { CalibRecord } from './types'
 
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 const CANVAS_W  = 576
@@ -80,7 +81,33 @@ const pace    = new PaceEstimator()
 
 // Rolling GPS speed buffer for computing speed CoV (last 10 values)
 const gpsSpeedBuf: number[] = []
+// Plausibility limits for integrating GPS fixes into distance.
+const GPS_MAX_SPEED_MS    = 7.0    // ~2:23/km — above any running pace, so a jump
+const GPS_MIN_SPEED_MS    = 0.7    // below this it's jitter, not travel
+const GPS_MAX_GAP_S       = 10     // never bridge a dropout; that's where jumps land
+const GPS_MAX_ACCURACY_M  = 30
+// Dead reckoning is for bridging short GPS gaps, not for standing still. Without
+// a deadline it invents distance for as long as the sensor reports a cadence.
+const DEAD_RECKON_MAX_MS  = 30_000
+// Auto-pause after this long without movement.
+const AUTO_PAUSE_AFTER_MS = 5_000
+// Resume only on a fresh GPS fix (not the long dead-reckoning grace).
+const AUTO_RESUME_MS      = 3_000
+
+// Displayed pace is averaged over this trailing window of distance vs time.
+// 15 s balances responsiveness against GPS-per-second jitter.
+const PACE_WINDOW_MS = 15_000
+// Show "-:--" once almost no ground has been covered for this long. Judged on a
+// short recent slice so a stop registers quickly, independent of the longer
+// averaging window.
+const PACE_STOP_MS = 5_000
+const paceWindow: { ms: number, distM: number }[] = []
+
 let pendingDistM  = 0       // GPS distance accumulated between 1Hz ticks
+let lastMovingMs  = 0       // last time GPS confirmed real movement
+let lastProgressMs= 0       // last tick distance actually advanced (incl. dead reckoning)
+let autoPaused    = false   // true only while auto-pause owns the paused state
+const gpsSkipped = { gap: 0, accuracy: 0, jump: 0, still: 0 }
 let lastGpsFix: GpsFix | null = null
 let totalStepEst  = 0       // cumulative step count estimate (from cadence × dt)
 
@@ -273,6 +300,20 @@ async function updatePaceImage(text: string): Promise<void> {
 // creation is retried until it succeeds instead of leaving a blank display.
 const PAGE_RETRY_MS = 5000
 let pageReady = false
+let pageBuiltOnce = false
+
+// Re-subscribe the sensors after the glasses reconnect.
+async function rearmSensors(b: Bridge): Promise<void> {
+  try {
+    await sensors.initGps(b)
+    if (sensors.path === 'g2imu') {
+      await b.imuControl(true, ImuReportPace.P200)
+    }
+    console.info(`[sensors] re-armed after reconnect (path=${sensors.path})`)
+  } catch (e) {
+    console.warn('[sensors] re-arm failed:', e)
+  }
+}
 
 const PAGE_RESULT_NAMES: Record<number, string> = {
   0: 'success', 1: 'invalid', 2: 'oversize', 3: 'outOfMemory',
@@ -319,6 +360,13 @@ async function ensurePage(b: Bridge): Promise<void> {
     }
     return
   }
+
+  // A rebuild means the link dropped and came back. The glasses stop streaming
+  // IMU across a disconnect and never resume on their own, and the location
+  // subscription can go with it — which showed up as the clock still running
+  // while cadence, steps and speed sat frozen. Re-arm both.
+  if (pageBuiltOnce) void rearmSensors(b)
+  pageBuiltOnce = true
 
   pageReady = true
   pageFailLogged = false
@@ -399,20 +447,55 @@ function tick(): void {
 
   // Consume accumulated GPS distance or fallback to dead reckoning
   const gpsOk = sensors.gps.lastAccuracyM < 30 && sensors.gps.lastSpeedMs !== null
+
+  // Only dead-reckon while GPS recently confirmed movement. Standing at a light
+  // with a poor fix used to keep banking distance (and steps) indefinitely,
+  // because a stationary sensor still reports a plausible-looking cadence.
+  const movingRecently = now - lastMovingMs < DEAD_RECKON_MAX_MS
+
+  // Auto-pause: stop the clock when movement stops, resume when it returns.
+  // Only ever undoes a pause it applied itself, so a manual pause still sticks.
+  // Pausing keys off distance progress (which includes dead reckoning), not
+  // GPS fixes alone — otherwise a 5 s GPS gap while still running would pause.
+  // Resuming keys off a real GPS fix so a stationary jitter can't un-pause.
+  if (state.settings.autoPause) {
+    if (state.status === 'running' && now - lastProgressMs > AUTO_PAUSE_AFTER_MS) {
+      state.status = 'paused'
+      state.pauseStart = now - AUTO_PAUSE_AFTER_MS   // don't count the idle wait
+      autoPaused = true
+      console.log('[autopause] paused — no movement')
+    } else if (state.status === 'paused' && autoPaused &&
+               now - lastMovingMs < AUTO_RESUME_MS) {
+      // Resume on a *fresh* GPS fix, not the 30 s dead-reckoning grace — that
+      // stays true long after a stop and would immediately un-pause.
+      if (state.pauseStart !== null) {
+        state.pausedElapsed += now - state.pauseStart
+        state.pauseStart = null
+      }
+      state.status = 'running'
+      autoPaused = false
+      lastProgressMs = now
+      console.log('[autopause] resumed — moving again')
+    }
+  }
+
   if (state.status === 'running') {
+    const before = state.totalDistanceM
     if (gpsOk) {
       state.totalDistanceM += pendingDistM
-    } else if (state.lastPace) {
-      // Dead reckoning: speedMs * dt (dt = 1s)
-      state.totalDistanceM += state.lastPace.speedMs * 1.0
+    } else if (state.lastPace && movingRecently) {
+      // Dead reckoning: speedMs * dt (dt = 1s), capped at a runnable speed
+      state.totalDistanceM += Math.min(state.lastPace.speedMs, GPS_MAX_SPEED_MS) * 1.0
     }
+    // Real forward progress this tick → resets the auto-pause timer.
+    if (state.totalDistanceM - before > 0.3) lastProgressMs = now
   }
   pendingDistM = 0
 
   // Estimate cadence step count — only count fresh, non-stale cadence so
   // steps stop accumulating the moment motion stops or the sensor stalls.
   const cadNow = sensors.freshCadence()
-  if (state.status === 'running' && cadNow !== null) {
+  if (state.status === 'running' && cadNow !== null && movingRecently) {
     totalStepEst += cadNow / 60   // 1s tick → cadence/60 steps
   }
 
@@ -427,6 +510,41 @@ function tick(): void {
     settings:     state.settings,
   })
   state.lastPace = result
+
+  // Displayed "current pace" from a trailing distance/time window — the same
+  // quantity as lap pace, so the two agree. The estimator smoothed 1000/v in
+  // pace-space, which by Jensen's inequality reads slower than distance/time
+  // whenever speed varies (badly so at walking speed, where the mean is small),
+  // and it used Doppler speed while laps use accumulated distance. This removes
+  // both mismatches. The estimator still drives dead reckoning and the k-scalar.
+  if (state.status === 'running') {
+    paceWindow.push({ ms: activeElapsedMs(state), distM: state.totalDistanceM })
+    while (paceWindow.length > 2 &&
+           paceWindow[paceWindow.length - 1]!.ms - paceWindow[0]!.ms > PACE_WINDOW_MS) {
+      paceWindow.shift()
+    }
+    const b = paceWindow[paceWindow.length - 1]!
+
+    // Stop detection over the last PACE_STOP_MS: distance barely moved → stopped.
+    // Uses accumulated distance, so dead reckoning through a GPS gap still counts
+    // as moving; only a genuine standstill trips it.
+    let si = paceWindow.length - 1
+    while (si > 0 && paceWindow[si - 1]!.ms >= b.ms - PACE_STOP_MS) si--
+    const stopSpan = (b.ms - paceWindow[si]!.ms) / 1000
+    const stopDist = b.distM - paceWindow[si]!.distM
+    const stopped = stopSpan >= 4 && stopDist < 1.0
+
+    if (stopped) {
+      result.paceSPerKm = null
+    } else {
+      const a = paceWindow[0]!
+      const dDist = b.distM - a.distM
+      const dSec = (b.ms - a.ms) / 1000
+      if (dSec >= 3 && dDist > 0.5) {
+        result.paceSPerKm = dSec / (dDist / 1000)   // s per km over the window
+      }
+    }
+  }
 
   // Collect run sample
   if (state.status === 'running') {
@@ -456,6 +574,8 @@ function tick(): void {
 async function persistAll(b: Bridge): Promise<void> {
   await saveRecords(async (k, v) => { await b.setLocalStorage(k, v) }, state.calibRecords).catch(console.error)
   await saveRuns(async (k, v) => { await b.setLocalStorage(k, v) }, state.runs).catch(console.error)
+  await b.setLocalStorage('pending_calib_v1',
+    state.pendingCalib ? JSON.stringify(state.pendingCalib) : '').catch(console.error)
   await b.setLocalStorage('k_scalar', String(pace.k.serialize())).catch(console.error)
   await b.setLocalStorage('settings_v1', JSON.stringify(state.settings)).catch(console.error)
 }
@@ -463,6 +583,11 @@ async function persistAll(b: Bridge): Promise<void> {
 async function loadAll(b: Bridge): Promise<void> {
   state.calibRecords = await loadRecords(k => b.getLocalStorage(k).catch(() => null))
   state.runs = await loadRuns(k => b.getLocalStorage(k).catch(() => null))
+
+  const pendRaw = await b.getLocalStorage('pending_calib_v1').catch(() => null)
+  if (pendRaw) {
+    try { state.pendingCalib = JSON.parse(pendRaw) as CalibRecord } catch { /* ignore */ }
+  }
 
   const kRaw = await b.getLocalStorage('k_scalar').catch(() => null)
   if (kRaw) {
@@ -521,6 +646,11 @@ function startRun(): void {
   state.segmentPaceSPerKm  = null
   state.runSamples         = []
   pendingDistM             = 0
+  lastMovingMs             = Date.now()
+  lastProgressMs           = Date.now()
+  autoPaused               = false
+  paceWindow.length        = 0
+  gpsSkipped.gap = gpsSkipped.accuracy = gpsSkipped.jump = gpsSkipped.still = 0
   totalStepEst             = 0
   lapView                  = false
   lapScrollOffset          = 0
@@ -548,17 +678,21 @@ async function stopRun(b: Bridge): Promise<void> {
       laps: state.laps.map(l => ({ ...l })),
     })
     console.log(`[runs] saved: ${(state.totalDistanceM / 1000).toFixed(2)}km in ${Math.round(elapsed / 1000)}s`)
+    console.log(`[gps] fixes not counted — jump:${gpsSkipped.jump} still:${gpsSkipped.still} ` +
+      `gap:${gpsSkipped.gap} accuracy:${gpsSkipped.accuracy}`)
   } else {
     console.log('[runs] not saved — run too short')
   }
 
-  // Auto-harvest calibration record from this run
+  // Harvest a calibration candidate, but do NOT apply it. A bad record silently
+  // skews every later pace estimate, so adopting one is an explicit opt-in on
+  // the phone panel after each run.
   if (state.runSamples.length >= 2) {
     const rec = harvestCalibRecord(state.runSamples, state.settings, 'gps')
     if (rec !== null) {
-      state.calibRecords = insertRecord(state.calibRecords, rec)
-      console.log('[harvest] new record:', rec.cadence_spm.toFixed(0), 'spm',
-        rec.step_length_m.toFixed(3), 'm/step')
+      state.pendingCalib = rec
+      console.log('[harvest] candidate (not applied):', rec.cadence_spm.toFixed(0), 'spm',
+        rec.step_length_m.toFixed(3), 'm/step — approve it in Settings to use it')
     } else {
       console.log('[harvest] no record')
     }
@@ -586,6 +720,10 @@ function discardRun(): void {
   state.segmentPaceSPerKm = null
   state.runSamples        = []
   pendingDistM            = 0
+  lastMovingMs            = 0
+  lastProgressMs          = 0
+  autoPaused              = false
+  paceWindow.length       = 0
   totalStepEst            = 0
   lapView                 = false
   lapScrollOffset         = 0
@@ -621,7 +759,7 @@ async function handleModalGesture(type: number, b: Bridge): Promise<void> {
 function renderSettings(b: Bridge): void {
   const root = document.getElementById('settings-root')
   if (!root) return
-  renderSettingsUI(root, state.settings, state.calibRecords, state.runs, {
+  renderSettingsUI(root, state.settings, state.calibRecords, state.runs, state.pendingCalib, {
     onSettingsChange(s) {
       state.settings = s
       persistAll(b).catch(console.error)
@@ -634,6 +772,11 @@ function renderSettings(b: Bridge): void {
     },
     onRunsChange(r) {
       state.runs = r
+      persistAll(b).catch(console.error)
+      renderSettings(b)
+    },
+    onPendingCalibChange(r) {
+      state.pendingCalib = r
       persistAll(b).catch(console.error)
       renderSettings(b)
     },
@@ -681,7 +824,26 @@ async function main(): Promise<void> {
       }
       if (fix.headingDeg !== null) lastHeadingDeg = fix.headingDeg
       if (state.status === 'running' && lastGpsFix !== null) {
-        pendingDistM += haversineM(lastGpsFix, fix)
+        // Every fix-to-fix hop used to be credited unconditionally, which is how
+        // a 1:28 run logged 16.3 km against Garmin's ~13: one lap ran at 8.4 m/s
+        // (a reacquisition jump), and standing at lights still banked metres per
+        // second of pure jitter. Only integrate hops that a runner could produce.
+        const dtS = (fix.ts - lastGpsFix.ts) / 1000
+        const d = haversineM(lastGpsFix, fix)
+        const impliedMs = dtS > 0 ? d / dtS : Infinity
+
+        if (dtS <= 0 || dtS > GPS_MAX_GAP_S) {
+          gpsSkipped.gap++            // dropout: re-anchor, don't credit the jump
+        } else if (fix.accuracyM > GPS_MAX_ACCURACY_M) {
+          gpsSkipped.accuracy++
+        } else if (impliedMs > GPS_MAX_SPEED_MS) {
+          gpsSkipped.jump++
+        } else if (impliedMs < GPS_MIN_SPEED_MS) {
+          gpsSkipped.still++          // standing still: this is jitter, not travel
+        } else {
+          pendingDistM += d
+          lastMovingMs = Date.now()
+        }
       }
       const firstFix = lastGpsFix === null
       lastGpsFix = fix
