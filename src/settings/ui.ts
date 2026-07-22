@@ -2,7 +2,8 @@
 // Lets the user edit height/weight and calibration records.
 
 import type { CalibRecord, RunRecord, Settings } from '../types'
-import { bandCoverage, editRecordManual, deleteRecord } from '../calibration/records'
+import { speedToBand } from '../types'
+import { bandCoverage, editRecordManual, deleteRecord, makeManualRecord, insertRecord } from '../calibration/records'
 import { renderRunsUI } from './runsUi'
 import { mountDebugLog, unmountDebugLog } from '../debugLog'
 
@@ -10,6 +11,7 @@ export interface SettingsCallbacks {
   onSettingsChange(s: Settings): void
   onRecordsChange(r: CalibRecord[]): void
   onRunsChange(r: RunRecord[]): void
+  onPendingCalibChange(r: CalibRecord | null): void
 }
 
 // Which screen the phone UI is showing. Module-level so a re-render (after an
@@ -18,6 +20,10 @@ export type Screen = 'settings' | 'runs' | 'console'
 let screen: Screen = 'settings'
 
 const BAND_LABELS = ['>5:33 /km', '4:46-5:33', '4:10-4:45', '3:42-4:09', '<3:42 /km']
+
+function bandOf(r: CalibRecord): number {
+  return speedToBand(r.speed_ms)
+}
 
 function fmtElapsed(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -31,6 +37,7 @@ export function renderSettingsUI(
   settings: Settings,
   records: CalibRecord[],
   runs: RunRecord[],
+  pendingCalib: CalibRecord | null,
   cb: SettingsCallbacks,
 ): void {
   const tabs = `
@@ -53,7 +60,10 @@ export function renderSettingsUI(
   // Captured before `root` is reassigned to the screen host below, so a re-render
   // replaces the whole panel instead of nesting a second tab bar inside it.
   const outer = root
-  const go = (s: Screen) => { screen = s; renderSettingsUI(outer, settings, records, runs, cb) }
+  const go = (s: Screen) => {
+    screen = s
+    renderSettingsUI(outer, settings, records, runs, pendingCalib, cb)
+  }
   root.querySelector('#tab-settings')!.addEventListener('click', () => go('settings'))
   root.querySelector('#tab-runs')!.addEventListener('click', () => go('runs'))
   root.querySelector('#tab-console')!.addEventListener('click', () => go('console'))
@@ -117,11 +127,47 @@ export function renderSettingsUI(
   <input type="checkbox" id="wakelock" ${settings.useWakeLock ? 'checked' : ''} />
   <span>Keep Screen On (WakeLock)</span>
 </label>
+<label style="display:flex;align-items:flex-start;gap:6px;margin:12px 0;">
+  <input type="checkbox" id="autopause" ${settings.autoPause ? 'checked' : ''} />
+  <span>Auto-pause when stopped
+    <br/><small style="color:#777">Stops the clock after ~12 s without movement.</small></span>
+</label>
+<label style="display:flex;align-items:flex-start;gap:6px;margin:12px 0;">
+  <input type="checkbox" id="motionfusion" ${settings.useMotionFusion ? 'checked' : ''} />
+  <span>Blend motion sensor into speed
+    <br/><small style="color:#777">Off by default — GPS alone matched a Garmin best.
+    The motion estimate is still used whenever GPS is unusable.</small></span>
+</label>
 <button class="btn primary" id="save-profile">Save profile</button>
 <div id="profile-msg" style="font-size:13px;color:#4a4;margin:6px 0;min-height:16px"></div>
 
+${pendingCalib ? `
+<h2>CALIBRATION FROM LAST RUN</h2>
+<div style="border:1px solid #543;border-radius:6px;padding:10px 12px;background:#1a1712">
+  <div style="font-size:14px">
+    <strong style="color:#fd6">${pendingCalib.step_length_m.toFixed(3)} m/step</strong>
+    at ${Math.round(pendingCalib.cadence_spm)} spm
+    · ${(pendingCalib.distance_m / 1000).toFixed(2)} km
+  </div>
+  <div style="font-size:12px;color:#777;margin:6px 0 10px">
+    Not applied. Approve it only if the run tracked accurately — a bad record
+    skews every later pace estimate.
+  </div>
+  <button class="btn primary" id="calib-approve">Approve &amp; use</button>
+  <button class="btn danger" id="calib-reject">Discard</button>
+</div>` : ''}
+
 <h2>SPEED BAND COVERAGE</h2>
 <div class="coverage" id="coverage"></div>
+
+<h2>MANUAL STEP LENGTH</h2>
+<div style="font-size:12px;color:#777;margin-bottom:6px">
+  Enter a known step length for a speed band directly.
+</div>
+<table>
+  <thead><tr><th>Band</th><th>m/step</th><th></th></tr></thead>
+  <tbody id="manual-body"></tbody>
+</table>
 
 <h2>CALIBRATION RECORDS (${records.length}/10)</h2>
 <table>
@@ -188,9 +234,44 @@ export function renderSettingsUI(
       height_cm: h,
       weight_kg: isFinite(wRaw) && wRaw > 0 ? wRaw : null,
       useWakeLock: wakeLock,
+      autoPause: (root.querySelector('#autopause') as HTMLInputElement).checked,
+      useMotionFusion: (root.querySelector('#motionfusion') as HTMLInputElement).checked,
     })
     msg.textContent = 'Saved'
     setTimeout(() => { msg.textContent = '' }, 2000)
+  })
+
+  // Pending calibration from the last run — opt in or throw away
+  root.querySelector('#calib-approve')?.addEventListener('click', () => {
+    if (pendingCalib === null) return
+    cb.onRecordsChange(insertRecord(records, pendingCalib))
+    cb.onPendingCalibChange(null)
+  })
+  root.querySelector('#calib-reject')?.addEventListener('click', () => {
+    cb.onPendingCalibChange(null)
+  })
+
+  // Manual step length per speed band
+  const manualBody = root.querySelector('#manual-body')!
+  BAND_LABELS.forEach((label, band) => {
+    const existing = records.filter(r => bandOf(r) === band)
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td>${label}</td>
+      <td><input class="step-in man-in" type="number" step="0.01" min="0.3" max="2.5"
+        placeholder="${existing[0] ? existing[0].step_length_m.toFixed(3) : '—'}"
+        data-band="${band}" /></td>
+      <td><button class="btn man-set" data-band="${band}" style="padding:2px 10px">Set</button></td>`
+    manualBody.appendChild(tr)
+  })
+  root.querySelectorAll('.man-set').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const band = parseInt((e.currentTarget as HTMLElement).dataset['band'] ?? '0')
+      const input = root.querySelector<HTMLInputElement>(`.man-in[data-band="${band}"]`)!
+      const v = parseFloat(input.value)
+      if (!isFinite(v) || v < 0.3 || v > 2.5) { alert('Step length must be 0.3–2.5 m'); return }
+      cb.onRecordsChange(insertRecord(records, makeManualRecord(band, v)))
+    })
   })
 
   // Edit distance and steps

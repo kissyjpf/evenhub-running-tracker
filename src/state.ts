@@ -29,6 +29,8 @@ export interface AppState {
   runSamples: RunSample[]
 
   calibRecords: CalibRecord[]
+  // Harvested at the end of a run but NOT applied — the user opts in per run.
+  pendingCalib: CalibRecord | null
   runs: RunRecord[]
   settings: Settings
 }
@@ -47,6 +49,7 @@ export function makeInitialState(): AppState {
     segmentPaceSPerKm: null,
     runSamples: [],
     calibRecords: [],
+    pendingCalib: null,
     runs: [],
     settings: { ...DEFAULT_SETTINGS },
   }

@@ -44,6 +44,11 @@ export interface Settings {
   showSteps: boolean
   showCalories: boolean
   useWakeLock: boolean
+  // Blend the motion-sensor speed estimate into pace. Off by default: measured
+  // against a Garmin, GPS alone tracked best and the fused figure ran slow.
+  useMotionFusion: boolean
+  // Stop the clock automatically when you stop moving.
+  autoPause: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -54,6 +59,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showSteps: true,
   showCalories: true,
   useWakeLock: true,
+  useMotionFusion: false,
+  autoPause: true,
 }
 
 export type SensorPath = 'devicemotion' | 'g2imu' | 'gps-only'
