@@ -77,28 +77,38 @@ function localWLS(
   return result > 0.3 && result < 3.0 ? result : null
 }
 
+// Physically plausible step lengths. The single-record and nearest-record paths
+// return a stored value directly, so without this a junk record (0 m/step) would
+// propagate straight into the speed model and halve the reported pace.
+const L_MIN = 0.3
+const L_MAX = 2.5
+
 export function computeLBase(
   records: CalibRecord[],
   cadence: number,
   vertAmp: number,
   settings: Settings,
 ): number {
-  const near = records.filter(r => Math.abs(r.cadence_spm - cadence) <= CADENCE_WIN)
+  const prior = (settings.height_cm / 100) * 0.68
+  const plausible = (l: number | undefined): boolean =>
+    l !== undefined && isFinite(l) && l >= L_MIN && l <= L_MAX
+
+  const usable = records.filter(r => plausible(r.step_length_m) && r.cadence_spm > 0)
+  const near = usable.filter(r => Math.abs(r.cadence_spm - cadence) <= CADENCE_WIN)
 
   if (near.length >= 2) {
     const wls = localWLS(near, cadence, vertAmp)
-    if (wls !== null) return wls
+    if (wls !== null && plausible(wls)) return wls
   }
 
   if (near.length === 1) return near[0]!.step_length_m
 
-  if (records.length > 0) {
-    const sorted = [...records].sort(
+  if (usable.length > 0) {
+    const sorted = [...usable].sort(
       (a, b) => Math.abs(a.cadence_spm - cadence) - Math.abs(b.cadence_spm - cadence),
     )
     return sorted[0]!.step_length_m
   }
 
-  // Height prior
-  return (settings.height_cm / 100) * 0.68
+  return prior
 }

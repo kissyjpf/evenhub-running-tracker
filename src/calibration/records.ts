@@ -1,10 +1,24 @@
 // Calibration record storage: max 10 records, 2 per speed band, coverage-first policy.
 
 import type { CalibRecord, Settings } from '../types'
-import { speedToBand } from '../types'
+import { speedToBand, BAND_EDGES } from '../types'
 
 export const MAX_RECORDS = 10
 export const MAX_PER_BAND = 2
+
+// A record teaches a step length, so one with no steps or no cadence teaches
+// nothing — and worse, computeLBase will happily return its 0 m/step, collapsing
+// the modelled speed and dragging the fused pace far below GPS. Older builds
+// stored these, so filter on load as well as on harvest.
+export function isUsableCalibRecord(r: CalibRecord): boolean {
+  return (
+    r !== null && typeof r === 'object' &&
+    isFinite(r.step_length_m) && r.step_length_m >= 0.3 && r.step_length_m <= 2.5 &&
+    isFinite(r.cadence_spm) && r.cadence_spm > 0 &&
+    isFinite(r.distance_m) && r.distance_m > 0 &&
+    isFinite(r.steps) && r.steps > 0
+  )
+}
 
 export async function loadRecords(
   get: (key: string) => Promise<string | null>,
@@ -13,7 +27,13 @@ export async function loadRecords(
     const raw = await get('calib_records_v2')
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed) ? (parsed as CalibRecord[]) : []
+    if (!Array.isArray(parsed)) return []
+    const all = parsed as CalibRecord[]
+    const good = all.filter(isUsableCalibRecord)
+    if (good.length !== all.length) {
+      console.warn(`[calib] dropped ${all.length - good.length} unusable record(s) on load`)
+    }
+    return good
   } catch {
     return []
   }
@@ -109,4 +129,39 @@ export async function invalidateAllRecords(
 ): Promise<void> {
   await saveRecords(set, [])
   await set('k_scalar', '1.0')
+}
+
+// Representative speed for each band, used when the user types a step length in
+// directly: the band is what they are choosing, so anchor the record at its
+// midpoint (the open-ended outer bands sit just outside the edge).
+export function bandCentreSpeedMs(band: number): number {
+  const [e0, e1, e2, e3] = BAND_EDGES
+  switch (band) {
+    case 0:  return e0 - 0.25
+    case 1:  return (e0 + e1) / 2
+    case 2:  return (e1 + e2) / 2
+    case 3:  return (e2 + e3) / 2
+    default: return e3 + 0.25
+  }
+}
+
+// Build a record from a hand-entered step length for a speed band. Cadence is
+// derived from the band speed so the (cadence -> step length) model stays
+// consistent with harvested records.
+export function makeManualRecord(band: number, stepLengthM: number): CalibRecord {
+  const speed = bandCentreSpeedMs(band)
+  return {
+    ts: Date.now(),
+    distance_m: 1000,
+    duration_ms: Math.round((1000 / speed) * 1000),
+    source: 'manual',
+    gps_accuracy_m: 0,
+    steps: Math.round(1000 / stepLengthM),
+    step_length_m: stepLengthM,
+    cadence_spm: (speed / stepLengthM) * 60,
+    vertical_amp: 0,
+    speed_ms: speed,
+    speed_cov: 0,
+    edited: true,
+  }
 }
