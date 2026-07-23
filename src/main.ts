@@ -233,7 +233,11 @@ const PACE_IMG_MAX_FAILS = 5
 async function updatePaceImage(text: string): Promise<void> {
   if (!bridge || paceImgSending || text === lastPaceImg) return
   if (paceImgDisabled) return
-  if (Date.now() - lastPaceImgAt < PACE_IMG_MIN_INTERVAL_MS) return
+  // Clearing the number (lap list / stop menu opened) and restoring it must not
+  // wait out the throttle — otherwise the big pace bitmap shows through the lap
+  // list for up to 5 s. Only steady pace updates are rate-limited.
+  const isViewToggle = text.trim() === '' || lastPaceImg.trim() === ''
+  if (!isViewToggle && Date.now() - lastPaceImgAt < PACE_IMG_MIN_INTERVAL_MS) return
   if (!glassesConnected || !linkHealthy) {
     if (!paceImgLinkWarned) {
       paceImgLinkWarned = true
