@@ -95,8 +95,13 @@ const AUTO_PAUSE_AFTER_MS = 5_000
 const AUTO_RESUME_MS      = 3_000
 
 // Displayed pace is averaged over this trailing window of distance vs time.
-// 15 s balances responsiveness against GPS-per-second jitter.
-const PACE_WINDOW_MS = 15_000
+// 8 s is responsive; the light EMA below tames the extra jitter that comes with
+// a shorter window.
+const PACE_WINDOW_MS = 8_000
+// EMA on the window *speed* (m/s, not pace) so smoothing stays harmonic-correct
+// and doesn't reintroduce the pace-space slow bias. ~0.7 ≈ 3 s time constant.
+const PACE_EMA_ALPHA = 0.7
+let paceSpeedEma: number | null = null
 // Show "-:--" once almost no ground has been covered for this long. Judged on a
 // short recent slice so a stop registers quickly, independent of the longer
 // averaging window.
@@ -540,12 +545,20 @@ function tick(): void {
 
     if (stopped) {
       result.paceSPerKm = null
+      paceSpeedEma = null            // re-seed cleanly on the next move
     } else {
       const a = paceWindow[0]!
       const dDist = b.distM - a.distM
       const dSec = (b.ms - a.ms) / 1000
-      if (dSec >= 3 && dDist > 0.5) {
-        result.paceSPerKm = dSec / (dDist / 1000)   // s per km over the window
+      // Wait for a few seconds of data before showing anything — the first 1-3 s
+      // of a run or lap is where the wild fast/slow swings came from.
+      if (dSec >= 4 && dDist > 2) {
+        const vWin = dDist / dSec    // m/s over the window
+        paceSpeedEma = paceSpeedEma === null ? vWin
+          : PACE_EMA_ALPHA * paceSpeedEma + (1 - PACE_EMA_ALPHA) * vWin
+        result.paceSPerKm = 1000 / paceSpeedEma
+      } else {
+        result.paceSPerKm = null
       }
     }
   }
@@ -564,11 +577,15 @@ function tick(): void {
     state.runSamples.push(sample)
   }
 
-  // Segment pace: direct from lap accumulated distance / elapsed time
+  // Segment (current lap) pace: cumulative lap distance / elapsed time. Hold it
+  // blank until the lap has enough distance to be stable — at 20 m the ±GPS
+  // jitter made it swing fast/slow, which is the fluctuation seen on the HUD.
   const segMs = lapElapsedMs(state)
   const segDm = lapDistanceM(state)
-  if (state.status === 'running' && segDm > 20 && segMs > 5000) {
-    state.segmentPaceSPerKm = (segMs / 1000) / (segDm / 1000)
+  if (state.status === 'running') {
+    state.segmentPaceSPerKm = (segDm > 60 && segMs > 15000)
+      ? (segMs / 1000) / (segDm / 1000)
+      : null
   }
 
   flushHUD().catch(console.error)
@@ -654,6 +671,7 @@ function startRun(): void {
   lastProgressMs           = Date.now()
   autoPaused               = false
   paceWindow.length        = 0
+  paceSpeedEma             = null
   gpsSkipped.gap = gpsSkipped.accuracy = gpsSkipped.jump = gpsSkipped.still = 0
   totalStepEst             = 0
   lapView                  = false
@@ -728,6 +746,7 @@ function discardRun(): void {
   lastProgressMs          = 0
   autoPaused              = false
   paceWindow.length       = 0
+  paceSpeedEma            = null
   totalStepEst            = 0
   lapView                 = false
   lapScrollOffset         = 0
