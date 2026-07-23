@@ -846,7 +846,7 @@ async function main(): Promise<void> {
         if (gpsSpeedBuf.length > 10) gpsSpeedBuf.shift()
       }
       if (fix.headingDeg !== null) lastHeadingDeg = fix.headingDeg
-      if (state.status === 'running' && lastGpsFix !== null) {
+      if (lastGpsFix !== null) {
         // Every fix-to-fix hop used to be credited unconditionally, which is how
         // a 1:28 run logged 16.3 km against Garmin's ~13: one lap ran at 8.4 m/s
         // (a reacquisition jump), and standing at lights still banked metres per
@@ -854,18 +854,23 @@ async function main(): Promise<void> {
         const dtS = (fix.ts - lastGpsFix.ts) / 1000
         const d = haversineM(lastGpsFix, fix)
         const impliedMs = dtS > 0 ? d / dtS : Infinity
+        const running = state.status === 'running'
 
         if (dtS <= 0 || dtS > GPS_MAX_GAP_S) {
-          gpsSkipped.gap++            // dropout: re-anchor, don't credit the jump
+          if (running) gpsSkipped.gap++      // dropout: re-anchor, don't credit
         } else if (fix.accuracyM > GPS_MAX_ACCURACY_M) {
-          gpsSkipped.accuracy++
+          if (running) gpsSkipped.accuracy++
         } else if (impliedMs > GPS_MAX_SPEED_MS) {
-          gpsSkipped.jump++
+          if (running) gpsSkipped.jump++
         } else if (impliedMs < GPS_MIN_SPEED_MS) {
-          gpsSkipped.still++          // standing still: this is jitter, not travel
+          if (running) gpsSkipped.still++    // standing still: jitter, not travel
         } else {
-          pendingDistM += d
+          // Genuine movement. Record it even while auto-paused — this is what
+          // lets the run resume; it lived inside the running-only branch before,
+          // so a pause never saw movement again and never came back. Distance is
+          // still credited only while actually running.
           lastMovingMs = Date.now()
+          if (running) pendingDistM += d
         }
       }
       const firstFix = lastGpsFix === null
