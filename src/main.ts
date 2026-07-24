@@ -52,7 +52,7 @@ const L3_Y      = ROW_H * 2      // 56
 const INFO_X    = 372
 const INFO_W    = CANVAS_W - INFO_X   // 204
 const INFO_Y    = 0
-const INFO_H    = ROW_H * 4      // 112
+const INFO_H    = ROW_H * 5      // 140 (clock/weather/altitude/compass/battery)
 
 // Bottom large pace readout — a dot-matrix bitmap in an image container (the
 // fixed base font is too coarse to tile a big number). Size must match the
@@ -436,6 +436,7 @@ function buildHudInput() {
     clock,
     weather,
     headingDeg:          lastHeadingDeg,
+    altitudeM:           sensors.gps.lastAltitudeM,
     glassesBatteryPct,
     modal:               hudModal,
   }

@@ -36,6 +36,7 @@ export interface HudInput {
   clock: string                        // "12:34"
   weather: WeatherInfo | null
   headingDeg: number | null
+  altitudeM: number | null
   glassesBatteryPct: number | null
   modal: HudModal
 }
@@ -94,9 +95,11 @@ function infoBlock(h: HudInput): string {
   const w = h.weather
   const wStr = w ? `${w.tempC}°C ${w.cond} ${w.humidity}%` : 'weather --'
   const batt = h.glassesBatteryPct !== null ? `${h.glassesBatteryPct}` : '--'
+  const altStr = h.altitudeM !== null ? `ALT ${Math.round(h.altitudeM)}m` : 'ALT --'
   return [
     h.clock,
     wStr,
+    altStr,
     compass16(h.headingDeg),
     `G:${batt}%`,
   ].join('\n')

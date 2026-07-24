@@ -27,6 +27,7 @@ export interface GpsFix {
   speedMs: number | null
   accuracyM: number
   headingDeg: number | null   // course over ground (0-360); null when stationary/unknown
+  altitudeM: number | null    // metres above sea level; null when unavailable
   ts: number
 }
 
@@ -61,6 +62,7 @@ export class GpsSensor {
   public available = false
   public lastSpeedMs: number | null = null
   public lastAccuracyM = 999
+  public lastAltitudeM: number | null = null
 
   /**
    * Start location updates. Prefers the native App Location API when a bridge
@@ -119,6 +121,7 @@ export class GpsSensor {
       lon: loc.longitude,
       accuracyM,
       headingDeg: typeof loc.heading === 'number' && loc.heading >= 0 ? loc.heading : null,
+      altitudeM: typeof loc.altitude === 'number' ? loc.altitude : null,
       ts,
       speedMs: null,
     }
@@ -142,6 +145,7 @@ export class GpsSensor {
       lon: c.longitude,
       accuracyM: c.accuracy,
       headingDeg: c.heading !== null && !isNaN(c.heading) ? c.heading : null,
+      altitudeM: typeof c.altitude === 'number' && !isNaN(c.altitude) ? c.altitude : null,
       ts: pos.timestamp,
       speedMs: null,
     }
@@ -163,6 +167,13 @@ export class GpsSensor {
     this.available = fix.accuracyM < 30
     this.lastSpeedMs = fix.speedMs
     this.lastAccuracyM = fix.accuracyM
+    // GPS altitude is noisy (±10 m is normal), so smooth it a little — otherwise
+    // the readout flickers by several metres while standing still.
+    if (fix.altitudeM !== null) {
+      this.lastAltitudeM = this.lastAltitudeM === null
+        ? fix.altitudeM
+        : 0.7 * this.lastAltitudeM + 0.3 * fix.altitudeM
+    }
     this.lastFix = fix
     this.onFix?.(fix)
   }
