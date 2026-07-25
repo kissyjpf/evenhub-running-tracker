@@ -1003,13 +1003,26 @@ async function main(): Promise<void> {
         case OsEventTypeList.CLICK_EVENT: {
           if (state.status === 'idle') {
             await flashCell('l1', '⋯ starting')
-            // First run: request DeviceMotion permission from user gesture
+            // First run: request phone DeviceMotion from this user gesture (iOS
+            // needs a tap). Phone motion runs ~60 Hz vs the glasses' ~10 Hz, so
+            // cadence is far better resolved when it's available.
             if (sensors.path === 'g2imu') {
               const granted = await sensors.tryDeviceMotion()
               if (granted) {
-                console.log('[sensors] upgraded to DeviceMotion')
-                // Free the BLE link now that the glasses IMU is redundant.
-                await b.imuControl(false).catch(() => {})
+                // Permission alone doesn't mean events flow — some WebViews stay
+                // silent. Keep the glasses IMU until phone samples actually arrive,
+                // then hand off and free the BLE link.
+                console.log('[sensors] DeviceMotion granted — verifying phone motion events…')
+                setTimeout(() => {
+                  if (sensors.dm.sampleCount > 5) {
+                    console.log(`[sensors] using phone DeviceMotion (${sensors.dm.sampleCount} samples) — glasses IMU off`)
+                    b.imuControl(false).catch(() => {})
+                  } else {
+                    console.warn(`[sensors] DeviceMotion silent (${sensors.dm.sampleCount} samples) — staying on glasses IMU`)
+                  }
+                }, 4000)
+              } else {
+                console.log('[sensors] DeviceMotion unavailable — staying on glasses IMU')
               }
             }
             startRun()

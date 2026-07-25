@@ -33,6 +33,7 @@ export class DeviceMotionSensor {
   public cadenceSpm: number | null = null
   public verticalAmp = 0
   public available = false
+  public sampleCount = 0        // devicemotion events actually received
 
   constructor() {
     this.filter = createBandpass(F_LOW, F_HIGH, FS_INIT)
@@ -40,18 +41,24 @@ export class DeviceMotionSensor {
 
   /** Must be called from a user gesture on iOS 13+. Returns true if granted. */
   async requestPermission(): Promise<boolean> {
-    if (!window.DeviceMotionEvent) return false
+    if (!window.DeviceMotionEvent) {
+      console.log('[DeviceMotion] unavailable — window.DeviceMotionEvent is undefined')
+      return false
+    }
     const Ev = window.DeviceMotionEvent as typeof DeviceMotionEvent & {
       requestPermission?: () => Promise<PermissionState>
     }
     if (typeof Ev.requestPermission === 'function') {
       try {
         const state = await Ev.requestPermission()
+        console.log(`[DeviceMotion] requestPermission -> ${state}`)
         return state === 'granted'
-      } catch {
+      } catch (e) {
+        console.log(`[DeviceMotion] requestPermission threw (needs a user tap?): ${e}`)
         return false
       }
     }
+    console.log('[DeviceMotion] no requestPermission (non-iOS) — assuming allowed')
     return true  // Non-iOS: permission not required
   }
 
@@ -62,6 +69,13 @@ export class DeviceMotionSensor {
   }
 
   private onMotion = (e: DeviceMotionEvent): void => {
+    this.sampleCount++
+    if (this.sampleCount === 1) {
+      const has = (v: unknown) => (v !== null && v !== undefined)
+      console.log('[DeviceMotion] first event — ' +
+        `acceleration=${has(e.acceleration?.z)} accelIncGravity=${has(e.accelerationIncludingGravity?.z)} ` +
+        `rotationRate=${has(e.rotationRate?.alpha)}`)
+    }
     let vertical: number | null = null
 
     const a = e.acceleration
