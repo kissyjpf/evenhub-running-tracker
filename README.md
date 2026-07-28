@@ -9,10 +9,6 @@ console for hardware debugging.
 
 Supports both **running and walking** (cadence detection down to ~50 spm).
 
-> **Also in this repo:** [`peak-finder/`](peak-finder/) — a second EvenHub app that names
-> the mountains around you, with the bearing and distance to each summit, plus your
-> heading, altitude, weather and the time.
-
 ---
 
 ## Features
